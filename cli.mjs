@@ -11,7 +11,6 @@ process.exit(
     uid: process.getuid?.() ?? -1,
     hostname: hostname(),
     fetch: globalThis.fetch,
-    node: process.execPath,
     cli: fileURLToPath(import.meta.url),
     out: (line) => process.stdout.write(`${line}\n`),
     err: (line) => process.stderr.write(`${line}\n`),

@@ -58,7 +58,6 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {typeof globalThis.fetch} fetch
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
- * @property {string} node the Node binary running this
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
@@ -206,25 +205,27 @@ async function plistText(file) {
 }
 
 /**
- * Whether `docker` is an executable on a PATH.
+ * The first executable of this name on a PATH, or nothing.
  *
  * @param {string} path
+ * @param {string} name
  */
-async function dockerOnPath(path) {
+async function onPath(path, name) {
   for (const directory of path.split(delimiter).filter((entry) => entry !== ""))
     try {
-      await access(join(directory, "docker"), constants.X_OK);
-      return true;
+      await access(join(directory, name), constants.X_OK);
+      return join(directory, name);
     } catch {
       // not in this directory
     }
-  return false;
+  return undefined;
 }
 
 /**
  * Writes the pool file's own agent, refusing one of its name that serves
  * another file. The agent is given this shell's PATH, since launchd's own
- * holds no Homebrew docker.
+ * holds no Homebrew docker, and runs the node that PATH finds, a link an
+ * upgrade keeps, rather than the versioned binary running this.
  *
  * @param {CliCall} call
  */
@@ -232,9 +233,14 @@ async function installAgent(call) {
   await poolCredentials(call.poolFile);
   const paths = runnerPaths(call.host.home);
   const path = call.host.environment.PATH ?? "";
-  if (!(await dockerOnPath(path)))
+  if ((await onPath(path, "docker")) === undefined)
     throw new Error(
       "docker is not on this shell's PATH, which the agent is given; install the docker CLI (brew install docker) and run this again",
+    );
+  const node = await onPath(path, "node");
+  if (node === undefined)
+    throw new Error(
+      "node is not on this shell's PATH, which the agent is given; run this from the shell the runner was installed from",
     );
   const label = launchAgentLabel(call.poolFile);
   const plist = join(paths.agents, launchAgentFileName(label));
@@ -251,7 +257,7 @@ async function installAgent(call) {
     plist,
     launchAgentPlist({
       label,
-      node: call.host.node,
+      node,
       cli: call.host.cli,
       poolFile: call.poolFile,
       path,
@@ -309,7 +315,7 @@ async function register(host, asked) {
   const label = launchAgentLabel(file);
   const agent = await plistText(
     join(runnerPaths(host.home).agents, launchAgentFileName(label)),
-  );
+  ).catch(() => undefined);
   if (agent !== undefined && launchAgentPoolFile(agent) === file) {
     host.out(
       `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,

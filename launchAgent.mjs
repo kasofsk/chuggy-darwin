@@ -30,15 +30,16 @@ const ownerOnlyUmask = 0o077;
 /**
  * The label of the agent serving a pool file, named for the file less its
  * `.json`, refused where the name holds a character a label is not given here
- * or is too long to name the agent's file.
+ * or is too long to name the agent's file. Every name register writes is
+ * taken: it writes only letters, digits, hyphens, underscores and dots.
  *
  * @param {string} poolFile
  */
 export function launchAgentLabel(poolFile) {
   const base = basename(poolFile, ".json");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(base))
+  if (!/^[A-Za-z0-9._-]+$/u.test(base))
     throw new RangeError(
-      `${poolFile} is not named as an agent can be: letters, digits, dots, underscores and hyphens, beginning with a letter or digit; rename the pool file`,
+      `${poolFile} is not named as an agent can be: letters, digits, dots, underscores and hyphens; rename the pool file`,
     );
   if (base.length > launchAgentBaseCharsMax)
     throw new RangeError(

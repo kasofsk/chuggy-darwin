@@ -8,6 +8,7 @@ import {
   launchAgentLabel,
   launchAgentPlist,
   launchAgentPoolFile,
+  shellQuoted,
 } from "./launchAgent.mjs";
 
 test("every pool file register names under the agent bound leaves its property list's name within a file name", () => {
@@ -39,7 +40,9 @@ test("an agent is labelled for its pool file, and a name a label is not given he
     ),
     "chuggy-darwin.vteng.chuggy.shame",
   );
-  for (const file of ["/p/a b.json", "/p/.hidden.json", "/p/a&b.json"])
+  for (const base of ["_c3_a9t", "-x", ".hidden"])
+    assert.equal(launchAgentLabel(`/p/${base}.json`), `chuggy-darwin.${base}`);
+  for (const file of ["/p/a b.json", "/p/a&b.json", "/p/é.json"])
     assert.throws(
       () => launchAgentLabel(file),
       /is not named as an agent can be/u,
@@ -66,9 +69,17 @@ test("an agent restarts its runner after any exit but 0, and its pool file reads
     /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/u,
   );
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/u);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/u);
+  assert.match(plist, /<key>Umask<\/key>\s*<integer>63<\/integer>/u);
   assert.ok(
     plist.includes("<string>/Users/a&amp;b/&lt;pools&gt;/p.json</string>"),
   );
   assert.equal(launchAgentPoolFile(plist), poolFile);
   assert.equal(launchAgentPoolFile("<plist/>"), undefined);
+});
+
+test("an argument the operator is told is quoted for a shell only where it must be", () => {
+  assert.equal(shellQuoted("/Users/a/x.plist"), "/Users/a/x.plist");
+  assert.equal(shellQuoted("/Users/a b/x.plist"), "'/Users/a b/x.plist'");
+  assert.equal(shellQuoted("it's"), "'it'\\''s'");
 });
