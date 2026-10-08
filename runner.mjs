@@ -130,8 +130,8 @@ const dockerMachineSchema = z.object({
 
 /**
  * The architectures docker reports that registration takes, as `process.arch`
- * names them, which is how registration takes one. Any other is passed on as docker names it, for
- * registration to refuse.
+ * names them; any other is passed on as docker names it, for registration to
+ * refuse.
  */
 const dockerArchitectures = /** @type {Record<string, string>} */ ({
   aarch64: "arm64",
