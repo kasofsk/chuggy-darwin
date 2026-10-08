@@ -31,7 +31,6 @@ A gate exits 0 clean, 1 on a finding, **2 when it could not run** — and 2 is n
 ## Conventions that bite if you miss them
 
 - **Nothing reviews its own work.** A change is reviewed by a fresh reviewer, a session that did not author it, under chuggy's review brief.
-- **The engine is called with `execFile` or `spawn` and never a shell**, and nothing secret goes in its argv: the envelope carries an attempt's bearer, so it reaches the container through a `0600` env file that is deleted once `run` returns.
 - **Docs are concise, correct, consistent and extremely minimal, and a comment is a doc.**
 - **A doc that says a path, gate, command or constant exists is making a factual claim, and that claim is checked or it is marked.** A markdown line naming something this tree does not have carries a marker: `<!-- intent -->` designed but not built, `<!-- runtime -->` correctly absent from git, `<!-- absent -->` named because it does not exist. `check-paths` still resolves and prints a marked line. A path of chuggy's or the core's is named as theirs; `check-paths` cannot see another repository's paths, so the reviewer holds that.
 - **No comment states a quantity a reader has to trust.** A figure is one the code or a suite derives, never one copied into prose.

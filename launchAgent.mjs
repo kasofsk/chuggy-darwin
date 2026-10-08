@@ -1,7 +1,6 @@
 /**
- * The launchd agent serving a pool, which this runner names for the pool's
- * file: its label is the file's name less `.json` under this runner's prefix,
- * and its property list is that label as a file in `~/Library/LaunchAgents`.
+ * The bound register is given on a Mac: room for the launchd agent that will
+ * serve a pool to be named for its file, as `chuggy-darwin.<base>.plist`.
  */
 
 /** What every agent's label of this runner begins with. */

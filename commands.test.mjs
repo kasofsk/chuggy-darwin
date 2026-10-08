@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -180,5 +188,54 @@ test("register says the token is spent where chuggy answered but the pool file c
   assert.match(
     err,
     /^the pool file could not be written, and the token is spent, so mint another: E/u,
+  );
+});
+
+test("register spends no token where it could not write the pool file", async (t) => {
+  const machine = await home(t);
+  await mkdir(join(machine, ".config"));
+  await writeFile(join(machine, ".config", "chuggy"), "");
+  const { fetch, requests } = answeringFetch(201, registered);
+  const { status, err } = await called(registerArgv, {
+    home: machine,
+    fetch,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    /cannot be made a directory only you can write, so no token was spent: E(NOTDIR|EXIST)/u,
+  );
+  assert.deepEqual(requests, []);
+});
+
+test("a token beginning with a dash is taken as --token=<token>, as usage says, and the space form keeps working for one that does not", async (t) => {
+  const machine = await home(t);
+  const dashed = `-${"a".repeat(42)}`;
+  for (const [argv, token] of [
+    [
+      ["register", "--api", "https://chuggy.example", `--token=${dashed}`],
+      dashed,
+    ],
+    [["register", "--api", "https://chuggy.example", "--token", "t-1"], "t-1"],
+  ]) {
+    const { fetch, requests } = answeringFetch(201, registered);
+    const { status, err } = await called(/** @type {string[]} */ (argv), {
+      home: machine,
+      fetch,
+    });
+    assert.equal(status, 0, err);
+    assert.equal(JSON.parse(String(requests[0].init.body)).token, token);
+  }
+  const { fetch, requests } = answeringFetch(201, registered);
+  const spaced = await called(
+    ["register", "--api", "https://chuggy.example", "--token", dashed],
+    { home: machine, fetch },
+  );
+  assert.equal(spaced.status, 2);
+  assert.match(spaced.err, /--token=-XYZ/u);
+  assert.deepEqual(requests, []);
+  assert.match(
+    (await called(["help"])).out,
+    /^usage: chuggy-darwin register --api <origin> --token=<token> \[--pool <name>\]$/mu,
   );
 });
