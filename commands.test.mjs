@@ -26,10 +26,21 @@ import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
  * @property {Record<string, string>} [environment]
  * @property {string} [home]
  * @property {string} [hostname]
- * @property {string} [arch]
+ * @property {string} [architecture] the docker VM's, as `docker info` names it
  * @property {typeof globalThis.fetch} [fetch]
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  */
+
+/**
+ * Docker with a VM of the given architecture.
+ *
+ * @param {string} architecture
+ */
+function vm(architecture) {
+  const { engine, state } = fakeEngine();
+  state.machine = { ...state.machine, architecture };
+  return engine;
+}
 
 /** A token source whose issuer has revoked the pool, so a pass ends without the network. */
 const deniedTokens = {
@@ -54,13 +65,12 @@ async function called(argv, machine = {}) {
     home: machine.home ?? "/nonexistent",
     uid: process.getuid?.() ?? -1,
     hostname: machine.hostname ?? "shame",
-    arch: machine.arch ?? "arm64",
     fetch:
       machine.fetch ??
       (async () => {
         throw new Error("a suite reaches no network");
       }),
-    engine: machine.engine ?? fakeEngine().engine,
+    engine: machine.engine ?? vm(machine.architecture ?? "aarch64"),
     tokens: deniedTokens,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
@@ -136,33 +146,52 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   assert.equal(again.out, `replaced ${file}`);
 });
 
-test("an Intel Mac registers a pool of amd64 Linux", async (t) => {
+test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 Linux whatever the Mac is", async (t) => {
   const { fetch, requests } = answeringFetch(201, registeredFixture);
-  await called(registerArgv, { home: await home(t), arch: "x64", fetch });
+  await called(registerArgv, {
+    home: await home(t),
+    architecture: "x86_64",
+    fetch,
+  });
   assert.deepEqual(JSON.parse(String(requests[0].init.body)).capabilities, [
     "Platform:Linux:Amd64",
   ]);
 });
 
+test("register spends no token while docker cannot be asked", async (t) => {
+  const machine = await home(t);
+  const { fetch, requests } = answeringFetch(201, registered);
+  const { engine, state } = fakeEngine();
+  state.unreachable = true;
+  const { status, err } = await called(registerArgv, {
+    home: machine,
+    engine,
+    fetch,
+  });
+  assert.equal(status, 1);
+  assert.match(err, /^docker could not be asked: Cannot connect/u);
+  assert.deepEqual(requests, []);
+});
+
 test("register asked wrongly exits 2 before the token is spent", async (t) => {
   const machine = await home(t);
   const { fetch, requests } = answeringFetch(201, registered);
-  for (const [argv, arch, line] of [
-    [registerArgv, "ia32", /^this machine is ia32/u],
+  for (const [argv, architecture, line] of [
+    [registerArgv, "riscv64", /^this machine is riscv64/u],
     [
       [...registerArgv, "--pool", "Shame"],
-      "arm64",
+      "aarch64",
       /^--pool Shame is not a pool name/u,
     ],
     [
       ["register", "--api", "https://chuggy.example"],
-      "arm64",
+      "aarch64",
       /^register needs --api and --token$/u,
     ],
   ]) {
     const { status, err } = await called(/** @type {string[]} */ (argv), {
       home: machine,
-      arch: /** @type {string} */ (arch),
+      architecture: /** @type {string} */ (architecture),
       fetch,
     });
     assert.equal(status, 2, String(argv));

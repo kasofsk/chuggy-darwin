@@ -3,8 +3,9 @@
  * the container backend beside the worker core's pool runner, which passes
  * until the plane denies the pool. Every command but register starts here.
  *
- * The machine a job is sized against is the docker VM, not the Mac: Colima's
- * VM has the CPUs and memory it was started with, and docker says how many.
+ * The machine a job is sized against, and whose platform a pool declares, is
+ * the docker VM, not the Mac: Colima's VM has the CPUs, memory and
+ * architecture it was started with, and docker says which.
  */
 
 import { Buffer } from "node:buffer";
@@ -117,19 +118,31 @@ export function runnerEngine() {
 const dockerMachineArgv = [
   "info",
   "--format",
-  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}}}',
+  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}},"architecture":{{json .Architecture}}}',
 ];
 
 const dockerMachineSchema = z.object({
   cpus: z.number().int().positive().safe(),
   memoryBytes: z.number().int().positive().safe(),
+  architecture: z.string(),
 });
 
 /**
- * The machine docker runs containers on, as a job is sized against it.
+ * Each architecture docker reports, as `process.arch` names it, which is how
+ * registration takes one. Any other is passed on as docker names it, for
+ * registration to refuse.
+ */
+const dockerArchitectures = /** @type {Record<string, string>} */ ({
+  aarch64: "arm64",
+  x86_64: "x64",
+});
+
+/**
+ * The machine docker runs containers on: its size, as a job is sized against
+ * it, and its architecture, as `process.arch` names one.
  *
  * @param {Engine} engine
- * @returns {Promise<{cpuMillis: number, memoryMib: number}>}
+ * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string}>}
  */
 export async function dockerMachine(engine) {
   const info = await engine.exec(dockerMachineArgv);
@@ -140,12 +153,17 @@ export async function dockerMachine(engine) {
     parsed = dockerMachineSchema.parse(JSON.parse(info.stdout));
   } catch {
     throw new Error(
-      `docker answered ${JSON.stringify(info.stdout.trim())}, not its CPUs and memory`,
+      `docker answered ${JSON.stringify(info.stdout.trim())}, not its CPUs, memory and architecture`,
     );
   }
   return {
-    cpuMillis: parsed.cpus * 1000,
-    memoryMib: Math.floor(parsed.memoryBytes / (1024 * 1024)),
+    size: {
+      cpuMillis: parsed.cpus * 1000,
+      memoryMib: Math.floor(parsed.memoryBytes / (1024 * 1024)),
+    },
+    arch: Object.hasOwn(dockerArchitectures, parsed.architecture)
+      ? dockerArchitectures[parsed.architecture]
+      : parsed.architecture,
   };
 }
 
@@ -182,7 +200,7 @@ export async function runnerParts(setup, host) {
   const socket = poolSocket(runtime);
   const engine = host.engine ?? runnerEngine();
   const dockerHost = await dockerEndpoint(engine);
-  const machine = await dockerMachine(engine);
+  const { size } = await dockerMachine(engine);
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const backend = containerBackend(
     {
@@ -197,7 +215,7 @@ export async function runnerParts(setup, host) {
       network: config.network,
       runtimeDir: runtime,
       logDir: paths.logs,
-      machine,
+      machine: size,
       pullRetryMs,
     },
     {
