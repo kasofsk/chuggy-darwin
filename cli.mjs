@@ -5,7 +5,9 @@ import { cliMain } from "./commands.mjs";
 
 process.exit(
   await cliMain(process.argv.slice(2), {
+    environment: process.env,
     home: homedir(),
+    uid: process.getuid?.() ?? -1,
     hostname: hostname(),
     arch: process.arch,
     fetch: globalThis.fetch,

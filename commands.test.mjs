@@ -12,16 +12,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
+
 import { cliMain } from "./commands.mjs";
+import { controlServed, inFlightFixture } from "./control.fixture.mjs";
+import { fakeEngine } from "./engine.fixture.mjs";
 import { answeringFetch, registeredFixture } from "./register.fixture.mjs";
+import { poolRuntimeDirectory } from "./runner.mjs";
+import { fixturePool, runnerFixture } from "./runner.fixture.mjs";
 
 /**
  * @typedef {object} Machine
+ * @property {Record<string, string>} [environment]
  * @property {string} [home]
  * @property {string} [hostname]
  * @property {string} [arch]
  * @property {typeof globalThis.fetch} [fetch]
+ * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine]
  */
+
+/** A token source whose issuer has revoked the pool, so a pass ends without the network. */
+const deniedTokens = {
+  acquire: async () => ({
+    acquired: "Denied",
+    evidence: "the pool was revoked",
+  }),
+  invalidate: () => undefined,
+};
 
 /**
  * @param {readonly string[]} argv
@@ -33,7 +50,9 @@ async function called(argv, machine = {}) {
   /** @type {string[]} */
   const err = [];
   const status = await cliMain(argv, {
+    environment: machine.environment ?? {},
     home: machine.home ?? "/nonexistent",
+    uid: process.getuid?.() ?? -1,
     hostname: machine.hostname ?? "shame",
     arch: machine.arch ?? "arm64",
     fetch:
@@ -41,6 +60,8 @@ async function called(argv, machine = {}) {
       (async () => {
         throw new Error("a suite reaches no network");
       }),
+    engine: machine.engine ?? fakeEngine().engine,
+    tokens: deniedTokens,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -71,14 +92,17 @@ test("help is asked for and answered", async () => {
   for (const argv of [["--help"], ["help"], ["-h"]]) {
     const { status, out } = await called(argv);
     assert.equal(status, 0);
-    assert.match(out, /^usage: chuggy-darwin register/u);
+    assert.match(out, /^usage: chuggy-darwin <command>/u);
   }
 });
 
 test("a call asked wrongly exits 2 with the usage", async () => {
   for (const argv of [
     [],
-    ["run", "--pool", "/p"],
+    ["frobnicate", "--pool", "/p"],
+    ["status", "extra", "--pool", "/p"],
+    ["stop", "--pool", "/p"],
+    ["run", "--token=t", "--pool", "/p"],
     ["register", "--pools", "/p"],
     [...registerArgv, "extra"],
   ]) {
@@ -236,6 +260,110 @@ test("a token beginning with a dash is taken as --token=<token>, as usage says, 
   assert.deepEqual(requests, []);
   assert.match(
     (await called(["help"])).out,
-    /^usage: chuggy-darwin register --api <origin> --token=<token> \[--pool <name>\]$/mu,
+    /^ +chuggy-darwin register --api <origin> --token=<token> \[--pool <name>\]$/mu,
   );
+});
+
+test("a command needs a pool file, named by --pool or CHUGGY_DARWIN_POOL", async () => {
+  const { status, err } = await called(["status"]);
+  assert.equal(status, 2);
+  assert.match(
+    err,
+    /^no pool file: name one with --pool or CHUGGY_DARWIN_POOL/u,
+  );
+});
+
+test("a run the plane denies is done, making the job network and leaving no socket behind", async (t) => {
+  const { home, paths } = await runnerFixture(t);
+  const { engine, state } = fakeEngine();
+  const runtime = poolRuntimeDirectory(paths, fixturePool);
+  const { status, out, err } = await called(["run"], {
+    home,
+    environment: {
+      CHUGGY_DARWIN_POOL: join(paths.pools, "vteng.chuggy.shame.json"),
+    },
+    engine,
+  });
+  assert.equal(status, 0, err);
+  assert.equal(
+    out,
+    [
+      "made the job network chuggy-jobs",
+      "the plane denied this pool: the pool was revoked",
+    ].join("\n"),
+  );
+  assert.ok(state.networks.has("chuggy-jobs"));
+  assert.deepEqual(await readdir(runtime), []);
+  assert.equal((await stat(runtime)).mode & 0o777, 0o700);
+});
+
+test("once the plane denies fails with why, and is refused while this pool's service runs", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const passed = await called(["once", "--pool", poolFile], { home });
+  assert.equal(passed.status, 1);
+  assert.equal(passed.err, "Denied: the pool was revoked");
+  await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+  );
+  const refused = await called(["once", "--pool", poolFile], { home });
+  assert.equal(refused.status, 1);
+  assert.equal(
+    refused.err,
+    "a chuggy-darwin service is running this pool; stop it before a pass of your own",
+  );
+});
+
+test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    runner: { concurrencyMax: 3, sessionsMax: 4 },
+  });
+  const { stopped } = await controlServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixturePool)),
+  );
+  const { engine, state } = fakeEngine();
+  state.containers.set("chuggy-shame-a", {
+    id: "id-a",
+    name: "chuggy-shame-a",
+    status: "running",
+    image: "i",
+    labels: {
+      "io.chuggy.pool": "vteng/chuggy/shame",
+      "io.chuggy.deadline": "1800000000",
+      "io.chuggy.assignment": "asg-2",
+      "io.chuggy.kind": "Job",
+    },
+  });
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(
+    status.out,
+    [
+      "service: running",
+      "limits: concurrencyMax 3, sessionsMax 4",
+      `${inFlightFixture.name}  session  pulling  i  asg-1`,
+      "chuggy-shame-a  job  running  deadline 2027-01-15T08:00:00.000Z  asg-2",
+    ].join("\n"),
+  );
+  const stop = await called(["stop", "asg-1", "--pool", poolFile], { home });
+  assert.equal(stop.status, 0);
+  assert.equal(stop.out, "stopped asg-1");
+  assert.deepEqual(stopped, ["asg-1"]);
+});
+
+test("a second run of a pool is refused before it removes anything of the first's", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const runtime = poolRuntimeDirectory(paths, fixturePool);
+  await controlServed(t, controlSocketPath(runtime));
+  await mkdir(join(runtime, "pull-1-inflight"));
+  const { status, err } = await called(["run", "--pool", poolFile], { home });
+  assert.equal(status, 1);
+  assert.match(err, /^a runner's service already answers at /u);
+  assert.deepEqual((await readdir(runtime)).sort(), [
+    "control.sock",
+    "pull-1-inflight",
+  ]);
 });
