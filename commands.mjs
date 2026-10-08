@@ -17,6 +17,7 @@ import {
   poolRunnerPassLine,
 } from "@chuggy/worker-core/poolRunner.mjs";
 import {
+  registerAskedChecked,
   registerPoolDirectory,
   registerPoolFileWritten,
   registerRedeemed,
@@ -25,9 +26,11 @@ import {
 
 import { launchAgentBaseCharsMax } from "./launchAgent.mjs";
 import {
+  dockerMachine,
   jobNetwork,
   runnerDirectories,
   runnerLeftoversRemoved,
+  runnerEngine,
   runnerParts,
   runnerSetup,
   scratchRemovedOnSignal,
@@ -41,9 +44,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} home
  * @property {number} uid
  * @property {string} hostname
- * @property {string} arch as `process.arch` names it
  * @property {typeof globalThis.fetch} fetch
- * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] a run's engine, when not docker
+ * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
@@ -176,13 +178,24 @@ async function stop(call) {
 
 /**
  * Redeems a registration token and writes the pool file it answers. It takes
- * no pool file: its `--pool` is the name the pool takes.
+ * no pool file: its `--pool` is the name the pool takes. The platform it
+ * declares is docker's VM's, which can differ from the Mac's, so docker is
+ * asked once the ask is found sound, and must answer before the token is spent.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
  */
 async function register(host, asked) {
-  const requested = registerRequest(asked, host);
+  const ask = registerAskedChecked(asked, host.hostname);
+  if ("refused" in ask) {
+    host.err(ask.refused);
+    return 2;
+  }
+  const { arch } = await dockerMachine(host.engine ?? runnerEngine());
+  const requested = registerRequest(asked, {
+    hostname: host.hostname,
+    arch,
+  });
   if ("refused" in requested) {
     host.err(requested.refused);
     return 2;

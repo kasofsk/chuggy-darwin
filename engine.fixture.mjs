@@ -95,7 +95,7 @@ function fakeEngineState() {
     /** Whether a run runs past the engine's cap after its container started, which the engine answers as interrupted. */
     runInterrupted: false,
     /** The VM docker runs containers in, as `info` reports it: Colima's default. */
-    machine: { cpus: 2, memoryBytes: 2 * 1024 ** 3 },
+    machine: { cpus: 2, memoryBytes: 2 * 1024 ** 3, architecture: "aarch64" },
     /**
      * The endpoint docker's current context names, or none when its context
      * cannot be read.
@@ -272,10 +272,7 @@ function answer(state, call) {
       ? answered("sha256:1\n")
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
-  if (verb === "info")
-    return answered(
-      `{"cpus":${String(state.machine.cpus)},"memoryBytes":${String(state.machine.memoryBytes)}}\n`,
-    );
+  if (verb === "info") return answered(`${JSON.stringify(state.machine)}\n`);
   if (verb === "context")
     return state.contextHost === undefined
       ? failed('context "default": context not found')

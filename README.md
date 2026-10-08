@@ -14,7 +14,7 @@ Mint a registration token for the pool in chuggy, then, from a checkout after `n
 
 Give the token with `=`: a token can begin with `-`, which `--token <token>` would read as an option.
 
-This spends the token, declaring the platform the machine's containers run, `Platform:Linux:Arm64` on Apple silicon or `Platform:Linux:Amd64` on Intel, and writes the pool file chuggy answers with to `~/.config/chuggy/pools/`, named for its tenant, project and pool: `vteng.chuggy.shame.json`. `--api` must be https unless it is this machine's loopback. The secret goes only into the file, mode 600.
+Colima must be running: this asks docker which architecture its VM runs before it spends the token, then declares that platform, `Platform:Linux:Arm64` for an arm64 VM, as Colima's default is on Apple silicon, or `Platform:Linux:Amd64` for an x86_64 one, and writes the pool file chuggy answers with to `~/.config/chuggy/pools/`, named for its tenant, project and pool: `vteng.chuggy.shame.json`. `--api` must be https unless it is this machine's loopback. The secret goes only into the file, mode 600.
 
 The pool takes the hostname's first label unless `--pool <name>` names it; a name is lowercase letters, digits and hyphens. Registering a pool again, from here or any machine, replaces its registration, and chuggy denies the earlier one.
 

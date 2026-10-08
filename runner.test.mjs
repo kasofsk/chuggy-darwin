@@ -40,7 +40,11 @@ const assignment = (asks = {}) => ({
 test("a job is sized against the VM docker runs it in, not the Mac", async (t) => {
   const { home, poolFile } = await runnerFixture(t);
   const { engine, state } = fakeEngine();
-  state.machine = { cpus: 2, memoryBytes: 2 * 1024 ** 3 };
+  state.machine = {
+    cpus: 2,
+    memoryBytes: 2 * 1024 ** 3,
+    architecture: "aarch64",
+  };
   const runner = await runnerParts(await runnerSetup(poolFile, home), {
     uid: ownUid,
     home,
@@ -92,16 +96,20 @@ test("a run's backend refuses an assignment while the token file lies outside th
   assert.equal(state.calls.length, calls);
 });
 
-test("docker's machine is refused when docker cannot be asked or answers something else", async () => {
+test("docker's machine is its VM's size and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {
   const { engine, state } = fakeEngine();
   assert.deepEqual(await dockerMachine(engine), {
-    cpuMillis: 2000,
-    memoryMib: 2048,
+    size: { cpuMillis: 2000, memoryMib: 2048 },
+    arch: "arm64",
   });
-  state.machine = { cpus: 0, memoryBytes: 1 };
+  state.machine = { ...state.machine, architecture: "x86_64" };
+  assert.equal((await dockerMachine(engine)).arch, "x64");
+  state.machine = { ...state.machine, architecture: "riscv64" };
+  assert.equal((await dockerMachine(engine)).arch, "riscv64");
+  state.machine = { ...state.machine, cpus: 0 };
   await assert.rejects(
     dockerMachine(engine),
-    /^Error: docker answered ".*", not its CPUs and memory$/u,
+    /^Error: docker answered ".*", not its CPUs, memory and architecture$/u,
   );
   state.unreachable = true;
   await assert.rejects(
