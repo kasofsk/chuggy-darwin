@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,8 @@ import {
   ownScratchRemoved,
   poolRuntimeDirectory,
   poolSocket,
+  runnerDirectories,
+  runnerLeftoversRemoved,
   runnerParts,
   runnerSetup,
   socketPathBytesMax,
@@ -85,7 +87,7 @@ test("a run's backend refuses an assignment while the token file lies outside th
   assert.equal(placed.placed, "Refused");
   assert.match(
     placed.evidence ?? "",
-    /is not under .*, the only directory Colima shares with its VM by default/u,
+    /is not under .*, or leads outside it, and .* is the only directory Colima shares with its VM by default/u,
   );
   assert.equal(state.calls.length, calls);
 });
@@ -158,6 +160,51 @@ test("the job network is made only where it is missing", async () => {
   assert.equal(await jobNetwork(engine, "chuggy-jobs"), "Created");
   assert.equal(await jobNetwork(engine, "chuggy-jobs"), "Present");
   assert.ok(state.networks.has("chuggy-jobs"));
+});
+
+test("a job network another run made between the inspection and the creation is present", async () => {
+  const { engine, state } = fakeEngine();
+  const raced = {
+    .../** @type {import("@chuggy/worker-core/engine.mjs").Engine} */ (engine),
+    exec: async (
+      /** @type {readonly string[]} */ argv,
+      /** @type {import("@chuggy/worker-core/engine.mjs").EngineCall | undefined} */ call,
+    ) => {
+      if (argv[0] === "network" && argv[1] === "create") {
+        state.networks.add(argv[2]);
+        return {
+          code: 1,
+          stdout: "",
+          stderr: `Error response from daemon: network with name ${argv[2]} already exists\n`,
+        };
+      }
+      return engine.exec(argv, call);
+    },
+  };
+  assert.equal(await jobNetwork(raced, "chuggy-jobs"), "Present");
+  const refused = {
+    ...raced,
+    exec: async (/** @type {readonly string[]} */ argv) =>
+      argv[1] === "create"
+        ? { code: 1, stdout: "", stderr: "Error: permission denied\n" }
+        : engine.exec(["network", "inspect", "missing"]),
+  };
+  await assert.rejects(
+    jobNetwork(refused, "missing"),
+    /^Error: network missing could not be created: Error: permission denied$/u,
+  );
+});
+
+test("what a killed run left in a pool's runtime directory is removed, and nothing else", async (t) => {
+  const { paths } = await runnerFixture(t);
+  const runtime = poolRuntimeDirectory(paths, fixturePool);
+  await runnerDirectories(paths, runtime);
+  for (const entry of ["pull-9-a", "job-9-b", "keep"])
+    await mkdir(join(runtime, entry));
+  await runnerLeftoversRemoved(runtime);
+  assert.deepEqual(await readdir(runtime), ["keep"]);
+  assert.equal((await stat(runtime)).mode & 0o777, 0o700);
+  assert.equal((await stat(paths.logs)).mode & 0o777, 0o700);
 });
 
 test("a process removes only the pull credentials and env files it made", async (t) => {

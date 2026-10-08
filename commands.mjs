@@ -1,7 +1,8 @@
 /**
  * The `chuggy-darwin` commands. Each answers an exit status: 0 done, 1 failed,
- * 2 asked wrongly. A run the plane denied is done, since nothing but a new
- * registration brings the pool back; every other end of a run is a failure.
+ * 2 asked wrongly. `run` ends without failing only when the plane denies the
+ * pool, which is done, since nothing but a new registration brings the pool
+ * back. `once` fails on any pass that did not reconcile, a denial among them.
  */
 
 import { resolve } from "node:path";

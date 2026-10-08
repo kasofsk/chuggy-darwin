@@ -20,7 +20,7 @@ The pool takes the hostname's first label unless `--pool <name>` names it; a nam
 
 ## Run
 
-Colima must be running (`colima start`), with docker's context its unix socket. A job is sized against Colima's VM rather than the Mac, so start Colima with the CPUs and memory the pool's work asks for.
+Colima must be running (`colima start`, whose VM is vz with virtiofs mounts by default; other mount types are untested), with docker's context its unix socket. A job is sized against Colima's VM rather than the Mac, so start Colima with the CPUs and memory the pool's work asks for.
 
 The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode 600:
 
@@ -32,7 +32,7 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 }
 ```
 
-`claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default. `concurrencyMax` (1), `sessionsMax` (2), `environment` and `network` (`chuggy-jobs`) are optional.
+`claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. `concurrencyMax` (1), `sessionsMax` (2), `environment` and `network` (`chuggy-jobs`) are optional.
 
 ```sh
 ./cli.mjs run --pool ~/.config/chuggy/pools/<file>     # until the plane denies the pool
@@ -41,4 +41,4 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 ./cli.mjs stop <assignment> --pool <file>
 ```
 
-`CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. A run the plane denied exits 0: only a new registration brings the pool back. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
+`CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.

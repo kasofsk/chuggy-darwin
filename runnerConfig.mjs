@@ -118,10 +118,22 @@ export async function runnerConfig(file) {
 }
 
 /**
+ * Whether `path` is `directory` or lies beneath it, by name alone.
+ *
+ * @param {string} directory
+ * @param {string} path
+ */
+function beneath(directory, path) {
+  const under = relative(directory, path);
+  return under !== ".." && !under.startsWith("../");
+}
+
+/**
  * Why this runner cannot hand its jobs the Claude token file, or nothing. The
- * file, followed through any link, must sit under the home the VM shares, and
- * be the runner's own and no one else's on this Mac. Only its metadata is
- * read: the token reaches the job by mount and never this process.
+ * path a job's mount names must sit under the home the VM shares, and so must
+ * the file it leads to, since the VM follows a link in its own filesystem. The
+ * file must be the runner's own and no one else's on this Mac. Only its
+ * metadata is read: the token reaches the job by mount and never this process.
  *
  * @param {string} file
  * @param {{uid: number, home: string}} runner this process's uid, which must own the file, and the home the VM shares
@@ -129,15 +141,17 @@ export async function runnerConfig(file) {
  */
 export async function claudeTokenFileRefusal(file, runner) {
   let real;
+  let realHome;
+  let stats;
   try {
     real = await realpath(file);
+    realHome = await realpath(runner.home);
+    stats = await stat(real);
   } catch {
     return `the Claude token file ${file} cannot be found; save \`claude setup-token\`'s output there`;
   }
-  const under = relative(await realpath(runner.home), real);
-  if (under === ".." || under.startsWith("../") || isAbsolute(under))
-    return `the Claude token file ${file} is not under ${runner.home}, the only directory Colima shares with its VM by default, so a job would find nothing at its mount`;
-  const stats = await stat(real);
+  if (!beneath(runner.home, file) || !beneath(realHome, real))
+    return `the Claude token file ${file} is not under ${runner.home}, or leads outside it, and ${runner.home} is the only directory Colima shares with its VM by default, so a job would find nothing at its mount`;
   if (!stats.isFile()) return `the Claude token file ${file} is not a file`;
   if ((stats.mode & sharedModeBits) !== 0)
     return `the Claude token file ${file} is mode ${(stats.mode & 0o777).toString(8)}; only its owner may read or write it (chmod 600)`;
