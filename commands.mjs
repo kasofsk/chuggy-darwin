@@ -17,6 +17,7 @@ import {
   poolRunnerPassLine,
 } from "@chuggy/worker-core/poolRunner.mjs";
 import {
+  registerAskedChecked,
   registerPoolDirectory,
   registerPoolFileWritten,
   registerRedeemed,
@@ -178,13 +179,18 @@ async function stop(call) {
 /**
  * Redeems a registration token and writes the pool file it answers. It takes
  * no pool file: its `--pool` is the name the pool takes. The platform it
- * declares is docker's VM's, which can differ from the Mac's, so docker must
- * answer before the token is spent.
+ * declares is docker's VM's, which can differ from the Mac's, so docker is
+ * asked once the ask is found sound, and must answer before the token is spent.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisterAsked} asked
  */
 async function register(host, asked) {
+  const ask = registerAskedChecked(asked, host.hostname);
+  if ("refused" in ask) {
+    host.err(ask.refused);
+    return 2;
+  }
   const { arch } = await dockerMachine(host.engine ?? runnerEngine());
   const requested = registerRequest(asked, {
     hostname: host.hostname,

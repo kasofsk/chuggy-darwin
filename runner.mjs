@@ -1,7 +1,8 @@
 /**
  * The runner composed: the pool's credentials and the runner's file read, and
  * the container backend beside the worker core's pool runner, which passes
- * until the plane denies the pool. Every command but register starts here.
+ * until the plane denies the pool. Every command but register is composed
+ * here; register asks it only what docker's VM is.
  *
  * The machine a job is sized against, and whose platform a pool declares, is
  * the docker VM, not the Mac: Colima's VM has the CPUs, memory and
@@ -128,8 +129,8 @@ const dockerMachineSchema = z.object({
 });
 
 /**
- * Each architecture docker reports, as `process.arch` names it, which is how
- * registration takes one. Any other is passed on as docker names it, for
+ * The architectures docker reports that registration takes, as `process.arch`
+ * names them, which is how registration takes one. Any other is passed on as docker names it, for
  * registration to refuse.
  */
 const dockerArchitectures = /** @type {Record<string, string>} */ ({

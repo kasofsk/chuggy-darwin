@@ -201,6 +201,29 @@ test("register asked wrongly exits 2 before the token is spent", async (t) => {
   await assert.rejects(stat(join(machine, ".config")), { code: "ENOENT" });
 });
 
+test("a wrong ask is refused as asked wrongly even while docker cannot be asked", async (t) => {
+  const { fetch, requests } = answeringFetch(201, registered);
+  const { engine, state } = fakeEngine();
+  state.unreachable = true;
+  for (const [argv, line] of [
+    [
+      ["register", "--api", "https://chuggy.example"],
+      /^register needs --api and --token$/u,
+    ],
+    [[...registerArgv, "--pool", "Bad"], /^--pool Bad is not a pool name/u],
+  ]) {
+    const { status, err } = await called(/** @type {string[]} */ (argv), {
+      home: await home(t),
+      engine,
+      fetch,
+    });
+    assert.equal(status, 2, String(argv));
+    assert.match(err, /** @type {RegExp} */ (line));
+  }
+  assert.deepEqual(state.calls, []);
+  assert.deepEqual(requests, []);
+});
+
 test("register writes nothing when chuggy refuses the token, and exits 1 with why", async (t) => {
   const machine = await home(t);
   const { status, out, err } = await called(registerArgv, {
