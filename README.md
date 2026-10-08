@@ -1,6 +1,6 @@
 # chuggy-darwin
 
-Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It is being built: today it registers the machine as a pool and runs the pool from a terminal; a launchd agent to keep it running follows. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs.
+Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It registers the machine as a pool and runs the pool, from a terminal or under a launchd agent that keeps it running. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs.
 
 It needs Node 24 or later.
 
@@ -42,3 +42,13 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 ```
 
 `CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
+
+## Agent
+
+```sh
+./cli.mjs install-agent --pool <file>
+```
+
+This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and runs it only while they are logged in, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
+
+Registering a pool its agent serves again replaces the registration the agent holds, so `register` prints the `launchctl kickstart` that restarts it.

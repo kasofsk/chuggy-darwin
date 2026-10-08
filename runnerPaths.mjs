@@ -8,6 +8,7 @@ import { join } from "node:path";
 /**
  * @typedef {object} RunnerPaths
  * @property {string} config the runner's own file
+ * @property {string} agents where launchd reads the user's agents
  * @property {string} pools the directory register writes pool files to
  * @property {string} logs where an ended job's logs are saved
  * @property {string} runtime where each pool's pull credentials, env files and control socket live
@@ -26,6 +27,7 @@ export function runnerPaths(home) {
       "chuggy-darwin",
       "runner.json",
     ),
+    agents: join(library, "LaunchAgents"),
     pools: join(home, ".config", "chuggy", "pools"),
     logs: join(library, "Logs", "chuggy-darwin"),
     runtime: join(library, "Caches", "chuggy-darwin"),
