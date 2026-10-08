@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -72,6 +73,8 @@ async function called(argv, machine = {}) {
       }),
     engine: machine.engine ?? vm(machine.architecture ?? "aarch64"),
     tokens: deniedTokens,
+    node: "/opt/homebrew/bin/node",
+    cli: "/opt/chuggy-darwin/cli.mjs",
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -133,7 +136,10 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   assert.equal(status, 0, err);
   const pools = join(machine, ".config", "chuggy", "pools");
   const file = join(pools, "newtenant.arbbot.shame.json");
-  assert.equal(out, `wrote ${file}`);
+  assert.equal(
+    out,
+    `wrote ${file}; next:\n  chuggy-darwin install-agent --pool ${file}`,
+  );
   assert.equal(err, "");
   const body = JSON.parse(String(requests[0].init.body));
   assert.equal(body.pool, "shame");
@@ -143,7 +149,7 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), registered);
   assert.ok(!`${out}${err}`.includes(registered.clientSecret));
   const again = await called(registerArgv, { home: machine, fetch });
-  assert.equal(again.out, `replaced ${file}`);
+  assert.match(again.out, new RegExp(`^replaced ${file}; next:`, "u"));
 });
 
 test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 Linux whatever the Mac is", async (t) => {
@@ -418,4 +424,106 @@ test("a second run of a pool is refused before it removes anything of the first'
     "control.sock",
     "pull-1-inflight",
   ]);
+});
+
+/**
+ * A PATH with an executable docker on it, as Homebrew installs one.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+async function dockerPath(t) {
+  const bin = await mkdtemp(join(tmpdir(), "chuggy-darwin-bin-"));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await writeFile(join(bin, "docker"), "#!/bin/sh\n");
+  await chmod(join(bin, "docker"), 0o755);
+  return `/usr/bin:${bin}`;
+}
+
+test("install-agent writes the pool file's own agent, which runs this CLI under this Node on this PATH, and prints how to start it", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const PATH = await dockerPath(t);
+  const { status, out, err } = await called(
+    ["install-agent", "--pool", poolFile],
+    { home, environment: { PATH } },
+  );
+  assert.equal(status, 0, err);
+  const label = "chuggy-darwin.vteng.chuggy.shame";
+  const plist = join(paths.agents, `${label}.plist`);
+  const uid = String(process.getuid?.());
+  assert.equal(
+    out,
+    [
+      `wrote ${plist}; start it, and Colima at login, with:`,
+      `  launchctl bootout gui/${uid}/${label} 2>/dev/null`,
+      `  launchctl bootstrap gui/${uid} ${plist}`,
+      "  brew services start colima",
+    ].join("\n"),
+  );
+  const text = await readFile(plist, "utf8");
+  for (const line of [
+    `<string>${label}</string>`,
+    "<string>/opt/homebrew/bin/node</string>",
+    "<string>/opt/chuggy-darwin/cli.mjs</string>",
+    `<string>${poolFile}</string>`,
+    `<string>${PATH}</string>`,
+    `<string>${join(paths.logs, `${label}.log`)}</string>`,
+  ])
+    assert.ok(text.includes(line), line);
+  assert.equal((await stat(paths.logs)).mode & 0o777, 0o700);
+  const again = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH },
+  });
+  assert.equal(again.status, 0, again.err);
+});
+
+test("install-agent refuses an agent of the pool file's name serving another file, and a PATH without docker", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const noDocker = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH: "/nonexistent" },
+  });
+  assert.equal(noDocker.status, 1);
+  assert.match(noDocker.err, /^docker is not on this shell's PATH/u);
+  const plist = join(paths.agents, "chuggy-darwin.vteng.chuggy.shame.plist");
+  await mkdir(paths.agents, { recursive: true });
+  await writeFile(plist, "<plist/>");
+  const refused = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH: await dockerPath(t) },
+  });
+  assert.equal(refused.status, 1);
+  assert.equal(
+    refused.err,
+    `${plist} serves no pool file this runner named, not ${poolFile}; remove that agent if it is stale, or rename the pool file`,
+  );
+  assert.equal(await readFile(plist, "utf8"), "<plist/>");
+});
+
+test("registering a pool its agent here runs says the agent stops until restarted, and how", async (t) => {
+  const machine = await home(t);
+  const { fetch } = answeringFetch(201, registered);
+  const PATH = await dockerPath(t);
+  const first = await called(registerArgv, { home: machine, fetch });
+  const file = join(
+    machine,
+    ".config",
+    "chuggy",
+    "pools",
+    "newtenant.arbbot.shame.json",
+  );
+  assert.equal(first.status, 0, first.err);
+  const installed = await called(["install-agent", "--pool", file], {
+    home: machine,
+    environment: { PATH },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  const again = await called(registerArgv, { home: machine, fetch });
+  assert.equal(
+    again.out,
+    [
+      `replaced ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
+      `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.newtenant.arbbot.shame`,
+    ].join("\n"),
+  );
 });

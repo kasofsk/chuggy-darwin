@@ -5,7 +5,9 @@
  * back. `once` fails on any pass that did not reconcile, a denial among them.
  */
 
-import { resolve } from "node:path";
+import { constants } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
@@ -24,7 +26,16 @@ import {
   registerRequest,
 } from "@chuggy/worker-core/register.mjs";
 
-import { launchAgentBaseCharsMax } from "./launchAgent.mjs";
+import {
+  launchAgentBaseCharsMax,
+  launchAgentCommands,
+  launchAgentFileName,
+  launchAgentLabel,
+  launchAgentPlist,
+  launchAgentPoolFile,
+  launchAgentRestart,
+  shellQuoted,
+} from "./launchAgent.mjs";
 import {
   dockerMachine,
   jobNetwork,
@@ -47,6 +58,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {typeof globalThis.fetch} fetch
  * @property {import("@chuggy/worker-core/engine.mjs").Engine} [engine] the engine a run uses and registration asks, when not docker
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
+ * @property {string} node the Node binary running this
+ * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
  *
@@ -66,6 +79,7 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   status                  this pool's limits and containers, and what the
                           service is placing
   stop <assignment>       stop one assignment's container
+  install-agent           write the launchd agent that runs \`run\`
 
 The pool file is --pool, or ${poolFileVariable}.`;
 
@@ -177,6 +191,83 @@ async function stop(call) {
 }
 
 /**
+ * A property list's text, or nothing where there is no such file.
+ *
+ * @param {string} file
+ */
+async function plistText(file) {
+  try {
+    return await readFile(file, "utf8");
+  } catch (failure) {
+    if (/** @type {NodeJS.ErrnoException} */ (failure).code === "ENOENT")
+      return undefined;
+    throw failure;
+  }
+}
+
+/**
+ * Whether `docker` is an executable on a PATH.
+ *
+ * @param {string} path
+ */
+async function dockerOnPath(path) {
+  for (const directory of path.split(delimiter).filter((entry) => entry !== ""))
+    try {
+      await access(join(directory, "docker"), constants.X_OK);
+      return true;
+    } catch {
+      // not in this directory
+    }
+  return false;
+}
+
+/**
+ * Writes the pool file's own agent, refusing one of its name that serves
+ * another file. The agent is given this shell's PATH, since launchd's own
+ * holds no Homebrew docker.
+ *
+ * @param {CliCall} call
+ */
+async function installAgent(call) {
+  await poolCredentials(call.poolFile);
+  const paths = runnerPaths(call.host.home);
+  const path = call.host.environment.PATH ?? "";
+  if (!(await dockerOnPath(path)))
+    throw new Error(
+      "docker is not on this shell's PATH, which the agent is given; install the docker CLI (brew install docker) and run this again",
+    );
+  const label = launchAgentLabel(call.poolFile);
+  const plist = join(paths.agents, launchAgentFileName(label));
+  const existing = await plistText(plist);
+  const served =
+    existing === undefined ? undefined : launchAgentPoolFile(existing);
+  if (existing !== undefined && served !== call.poolFile)
+    throw new Error(
+      `${plist} serves ${served ?? "no pool file this runner named"}, not ${call.poolFile}; remove that agent if it is stale, or rename the pool file`,
+    );
+  await mkdir(paths.agents, { recursive: true });
+  await mkdir(paths.logs, { recursive: true, mode: 0o700 });
+  await writeFile(
+    plist,
+    launchAgentPlist({
+      label,
+      node: call.host.node,
+      cli: call.host.cli,
+      poolFile: call.poolFile,
+      path,
+      log: join(paths.logs, `${label}.log`),
+    }),
+  );
+  call.host.out(`wrote ${plist}; start it, and Colima at login, with:`);
+  for (const command of [
+    ...launchAgentCommands({ uid: call.host.uid, label, plist }),
+    "brew services start colima",
+  ])
+    call.host.out(`  ${command}`);
+  return 0;
+}
+
+/**
  * Redeems a registration token and writes the pool file it answers. It takes
  * no pool file: its `--pool` is the name the pool takes. The platform it
  * declares is docker's VM's, which can differ from the Mac's, so docker is
@@ -214,11 +305,30 @@ async function register(host, asked) {
     );
   });
   await poolCredentials(file);
-  host.out(`${replaced ? "replaced" : "wrote"} ${file}`);
+  const verb = replaced ? "replaced" : "wrote";
+  const label = launchAgentLabel(file);
+  const agent = await plistText(
+    join(runnerPaths(host.home).agents, launchAgentFileName(label)),
+  );
+  if (agent !== undefined && launchAgentPoolFile(agent) === file) {
+    host.out(
+      `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
+    );
+    host.out(`  ${launchAgentRestart({ uid: host.uid, label })}`);
+    return 0;
+  }
+  host.out(`${verb} ${file}; next:`);
+  host.out(`  chuggy-darwin install-agent --pool ${shellQuoted(file)}`);
   return 0;
 }
 
-const commands = { run, once, status, stop };
+const commands = {
+  run,
+  once,
+  status,
+  stop,
+  "install-agent": installAgent,
+};
 
 /**
  * @param {readonly string[]} argv the arguments after the entry
