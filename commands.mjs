@@ -230,7 +230,8 @@ async function plistText(file) {
 }
 
 /**
- * The first executable of this name on a PATH, or nothing.
+ * The first executable of this name on a PATH, as an absolute path, since
+ * launchd runs an agent from `/`, or nothing.
  *
  * @param {string} path
  * @param {string} name
@@ -239,7 +240,7 @@ async function onPath(path, name) {
   for (const directory of path.split(delimiter).filter((entry) => entry !== ""))
     try {
       await access(join(directory, name), constants.X_OK);
-      return join(directory, name);
+      return resolve(directory, name);
     } catch {
       // not in this directory
     }

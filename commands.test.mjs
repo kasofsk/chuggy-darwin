@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
@@ -592,4 +592,19 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
   assert.match(err, /^warn {2}launchd agent: none; install-agent writes /mu);
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);
+});
+
+test("install-agent writes an absolute node for a PATH entry relative to where it ran, since launchd runs the agent from /", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const { bin } = await binPath(t);
+  const installed = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH: relative(process.cwd(), bin) },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  const plist = await readFile(
+    join(paths.agents, "chuggy-darwin.vteng.chuggy.shame.plist"),
+    "utf8",
+  );
+  assert.ok(plist.includes(`<string>${join(bin, "node")}</string>`), plist);
 });
