@@ -2,14 +2,22 @@
 
 Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It registers the machine as a pool and runs the pool, from a terminal or under a launchd agent that keeps it running. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs.
 
-It needs Node 24 or later.
+It needs Node 24 or later, the docker CLI and Colima: `brew install node docker colima`, then `colima start`.
+
+## Install
+
+```sh
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.1.0/chuggy-darwin-0.1.0.tgz
+```
+
+One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`.
 
 ## Register
 
-Mint a registration token for the pool in chuggy, then, from a checkout after `npm ci`:
+Mint a registration token for the pool in chuggy, then:
 
 ```sh
-./cli.mjs register --api <chuggy's origin> --token=<token>
+chuggy-darwin register --api <chuggy's origin> --token=<token>
 ```
 
 Give the token with `=`: a token can begin with `-`, which `--token <token>` would read as an option.
@@ -35,11 +43,11 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 `claudeTokenFile` is where `claude setup-token`'s output was saved: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. `concurrencyMax` (1), `sessionsMax` (2), `environment` and `network` (`chuggy-jobs`) are optional.
 
 ```sh
-./cli.mjs run --pool ~/.config/chuggy/pools/<file>     # until the plane denies the pool
-./cli.mjs once --pool <file>                           # one pass
-./cli.mjs status --pool <file>
-./cli.mjs stop <assignment> --pool <file>
-./cli.mjs doctor --pool <file>                         # everything a run needs, changing nothing
+chuggy-darwin run --pool ~/.config/chuggy/pools/<file>  # until the plane denies the pool
+chuggy-darwin once --pool <file>  # one pass
+chuggy-darwin status --pool <file>
+chuggy-darwin stop <assignment> --pool <file>
+chuggy-darwin doctor --pool <file>  # everything a run needs, changing nothing
 ```
 
 `CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. `doctor` also fails where docker's VM no longer runs the platform the pool registered, as after `colima start --arch` with another architecture, and warns where no agent serves the pool. While the pool holds work, a run keeps the Mac from idle sleep with `caffeinate -i`, since a sleeping Mac pauses the VM and the work's leases lapse; a closed lid on battery still sleeps. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
@@ -47,9 +55,9 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 ## Agent
 
 ```sh
-./cli.mjs install-agent --pool <file>
+chuggy-darwin install-agent --pool <file>
 ```
 
-This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and runs it only while they are logged in, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
+This writes `~/Library/LaunchAgents/chuggy-darwin.<pool file less .json>.plist`, which runs `run` for that pool file under the `node` and with the PATH of this shell, since launchd's own PATH finds no Homebrew docker; it takes the link on PATH, such as `/opt/homebrew/bin/node`, which an upgrade keeps. It takes no other variable, so a `DOCKER_HOST` or `DOCKER_CONTEXT` set in the shell does not reach the agent, which uses docker's current context. It prints how to load it. launchd starts the agent when the user logs in to the Mac's desktop, and again after any exit but 0, after a pause, so an agent started before Colima tries again; a pool the plane denied stays down. It runs only while the user is logged in. Its output goes to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<pool file less .json>.log`. `brew services start colima` starts Colima at login too.
 
 Registering a pool its agent serves again replaces the registration the agent holds, so `register` prints the `launchctl kickstart` that restarts it.
