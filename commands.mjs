@@ -17,6 +17,8 @@ import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
   poolRunnerLoop,
   poolRunnerPassLine,
+  poolRunnerPlane,
+  poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
 import {
   registerAskedChecked,
@@ -26,6 +28,7 @@ import {
   registerRequest,
 } from "@chuggy/worker-core/register.mjs";
 
+import { doctorFindings, findingLine } from "./doctor.mjs";
 import {
   launchAgentBaseCharsMax,
   launchAgentCommands,
@@ -78,6 +81,7 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   status                  this pool's limits and containers, and what the
                           service is placing
   stop <assignment>       stop one assignment's container
+  doctor                  check everything a run needs
   install-agent           write the launchd agent that runs \`run\`
 
 The pool file is --pool, or ${poolFileVariable}.`;
@@ -187,6 +191,27 @@ async function stop(call) {
   }
   call.host.err(answered.evidence ?? answered.refused ?? "not stopped");
   return 1;
+}
+
+/** @param {CliCall} call */
+async function doctor(call) {
+  const findings = await doctorFindings({
+    poolFile: call.poolFile,
+    paths: runnerPaths(call.host.home),
+    uid: call.host.uid,
+    home: call.host.home,
+    parts: {
+      engine: () => call.host.engine ?? runnerEngine(),
+      tokens: (credentials) =>
+        call.host.tokens ?? poolRunnerTokens(credentials),
+      plane: poolRunnerPlane,
+    },
+  });
+  for (const finding of findings)
+    (finding.passed && finding.warning !== true
+      ? call.host.out
+      : call.host.err)(findingLine(finding));
+  return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
 /**
@@ -324,6 +349,7 @@ async function register(host, asked) {
     return 0;
   }
   host.out(`${verb} ${file}; next:`);
+  host.out(`  chuggy-darwin doctor --pool ${shellQuoted(file)}`);
   host.out(`  chuggy-darwin install-agent --pool ${shellQuoted(file)}`);
   return 0;
 }
@@ -333,6 +359,7 @@ const commands = {
   once,
   status,
   stop,
+  doctor,
   "install-agent": installAgent,
 };
 

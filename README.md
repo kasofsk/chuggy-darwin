@@ -39,9 +39,10 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 ./cli.mjs once --pool <file>                           # one pass
 ./cli.mjs status --pool <file>
 ./cli.mjs stop <assignment> --pool <file>
+./cli.mjs doctor --pool <file>                         # everything a run needs, changing nothing
 ```
 
-`CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
+`CHUGGY_DARWIN_POOL` names the pool file where `--pool` does not. `run` exits 0 when the plane denies the pool, since only a new registration brings it back; `once` exits 1 on a denial as on any pass that did not reconcile. `doctor` also fails where docker's VM no longer runs the platform the pool registered, as after `colima start --arch` with another architecture, and warns where no agent serves the pool. While the pool holds work, a run keeps the Mac from idle sleep with `caffeinate -i`, since a sleeping Mac pauses the VM and the work's leases lapse; a closed lid on battery still sleeps. Each pool's control socket, pull credentials and env files live in `~/Library/Caches/chuggy-darwin/`, and ended jobs' logs in `~/Library/Logs/chuggy-darwin/`.
 
 ## Agent
 
