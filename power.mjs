@@ -25,13 +25,17 @@ export function powerAssertion(seams = {}) {
   return {
     held(holding) {
       if (holding && caffeinate === undefined) {
-        const child = started("caffeinate", ["-i", "-w", String(pid)], {
-          stdio: "ignore",
-        });
+        const child = started(
+          "/usr/bin/caffeinate",
+          ["-i", "-w", String(pid)],
+          {
+            stdio: "ignore",
+          },
+        );
         child.on("error", (failure) =>
           seams.log?.(`the Mac could not be kept awake: ${failure.message}`),
         );
-        child.on("exit", () => {
+        child.on("close", () => {
           if (caffeinate === child) caffeinate = undefined;
         });
         caffeinate = child;

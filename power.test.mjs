@@ -51,14 +51,18 @@ test("the Mac is kept awake from the first read that finds work held until one f
   await backend.held();
   assert.equal(power.asserted(), true);
   assert.deepEqual(started, [
-    { command: "caffeinate", argv: ["-i", "-w", "4242"], killed: false },
+    {
+      command: "/usr/bin/caffeinate",
+      argv: ["-i", "-w", "4242"],
+      killed: false,
+    },
   ]);
   await backend.held();
   assert.equal(power.asserted(), false);
   assert.equal(started[0].killed, true);
 });
 
-test("a caffeinate that ended of itself is started again by the next read that finds work, and one that cannot start is logged", () => {
+test("a caffeinate that could not start, or ended of itself, is started again by the next read that finds work, and the failure is logged", () => {
   const { spawn, started, children } = recordingSpawn();
   /** @type {string[]} */
   const log = [];
@@ -71,7 +75,7 @@ test("a caffeinate that ended of itself is started again by the next read that f
   power.held(true);
   assert.equal(started.length, 1);
   children[0].emit("error", new Error("spawn caffeinate ENOENT"));
-  children[0].emit("exit", null, null);
+  children[0].emit("close", -2, null);
   assert.equal(power.asserted(), false);
   assert.deepEqual(log, [
     "the Mac could not be kept awake: spawn caffeinate ENOENT",

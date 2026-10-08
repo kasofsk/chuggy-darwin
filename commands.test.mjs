@@ -594,7 +594,7 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);
 });
 
-test("install-agent writes an absolute node for a PATH entry relative to where it ran, since launchd runs the agent from /", async (t) => {
+test("install-agent writes an absolute node and PATH for a PATH entry relative to where it ran, since launchd runs the agent from /", async (t) => {
   const { home, poolFile, paths } = await runnerFixture(t);
   const { bin } = await binPath(t);
   const installed = await called(["install-agent", "--pool", poolFile], {
@@ -607,4 +607,8 @@ test("install-agent writes an absolute node for a PATH entry relative to where i
     "utf8",
   );
   assert.ok(plist.includes(`<string>${join(bin, "node")}</string>`), plist);
+  assert.match(
+    plist,
+    new RegExp(`<key>PATH</key>\\s*<string>${bin}</string>`, "u"),
+  );
 });

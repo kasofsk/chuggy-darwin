@@ -230,8 +230,7 @@ async function plistText(file) {
 }
 
 /**
- * The first executable of this name on a PATH, as an absolute path, since
- * launchd runs an agent from `/`, or nothing.
+ * The first executable of this name on a PATH, or nothing.
  *
  * @param {string} path
  * @param {string} name
@@ -240,7 +239,7 @@ async function onPath(path, name) {
   for (const directory of path.split(delimiter).filter((entry) => entry !== ""))
     try {
       await access(join(directory, name), constants.X_OK);
-      return resolve(directory, name);
+      return join(directory, name);
     } catch {
       // not in this directory
     }
@@ -250,7 +249,8 @@ async function onPath(path, name) {
 /**
  * Writes the pool file's own agent, refusing one of its name that serves
  * another file. The agent is given this shell's PATH, since launchd's own
- * holds no Homebrew docker, and runs the node that PATH finds, a link an
+ * holds no Homebrew docker, each entry made absolute since launchd runs an
+ * agent from `/`, and runs the node that PATH finds, a link an
  * upgrade keeps, rather than the versioned binary running this.
  *
  * @param {CliCall} call
@@ -258,7 +258,11 @@ async function onPath(path, name) {
 async function installAgent(call) {
   await poolCredentials(call.poolFile);
   const paths = runnerPaths(call.host.home);
-  const path = call.host.environment.PATH ?? "";
+  const path = (call.host.environment.PATH ?? "")
+    .split(delimiter)
+    .filter((entry) => entry !== "")
+    .map((entry) => resolve(entry))
+    .join(delimiter);
   if ((await onPath(path, "docker")) === undefined)
     throw new Error(
       "docker is not on this shell's PATH, which the agent is given; install the docker CLI (brew install docker) and run this again",
