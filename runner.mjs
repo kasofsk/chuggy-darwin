@@ -37,6 +37,7 @@ import {
 } from "@chuggy/worker-core/poolRunner.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
+import { powerAssertion, poweredBackend } from "./power.mjs";
 import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -59,7 +60,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} socket where the pool's service listens
  * @property {Engine} engine
  * @property {ContainerBackend} backend
- * @property {WorkerPoolClient} client
+ * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
  */
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
@@ -139,6 +140,25 @@ const dockerArchitectures = /** @type {Record<string, string>} */ ({
 });
 
 /**
+ * The platform capability a pool on a VM of each architecture declares, as
+ * registration declares it, which the suite holds this to.
+ */
+const vmPlatforms = /** @type {Record<string, string>} */ ({
+  arm64: "Platform:Linux:Arm64",
+  x64: "Platform:Linux:Amd64",
+});
+
+/**
+ * The platform a VM of this architecture runs, or nothing for one no pool
+ * runs.
+ *
+ * @param {string} arch as `process.arch` names one
+ */
+export function vmPlatform(arch) {
+  return Object.hasOwn(vmPlatforms, arch) ? vmPlatforms[arch] : undefined;
+}
+
+/**
  * The machine docker runs containers on: its size, as a job is sized against
  * it, and its architecture, as `process.arch` names one.
  *
@@ -192,7 +212,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, and the fetch a job's or a session's plane is reached by when not the global one
+ * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, and the power assertion when not caffeinate
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -229,9 +249,10 @@ export async function runnerParts(setup, host) {
         claudeTokenFileRefusal(file, { uid: host.uid, home: host.home }),
     },
   );
+  const power = host.power ?? powerAssertion({ log: host.log });
   const client = poolRunnerClient(
     credentials,
-    backend,
+    poweredBackend(backend, power),
     { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
     { tokens, fetch: host.fetch },
   );

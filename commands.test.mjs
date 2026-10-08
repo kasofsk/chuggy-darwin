@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
@@ -137,7 +137,11 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   const file = join(pools, "newtenant.arbbot.shame.json");
   assert.equal(
     out,
-    `wrote ${file}; next:\n  chuggy-darwin install-agent --pool ${file}`,
+    [
+      `wrote ${file}; next:`,
+      `  chuggy-darwin doctor --pool ${file}`,
+      `  chuggy-darwin install-agent --pool ${file}`,
+    ].join("\n"),
   );
   assert.equal(err, "");
   const body = JSON.parse(String(requests[0].init.body));
@@ -568,5 +572,43 @@ test("registering a pool its agent here runs says the agent stops until restarte
       `replaced ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
       `  launchctl kickstart -k gui/${String(process.getuid?.())}/chuggy-darwin.newtenant.arbbot.shame`,
     ].join("\n"),
+  );
+});
+
+test("doctor exits 1 on a failed check, printing every check it made", async (t) => {
+  const { home, poolFile } = await runnerFixture(t);
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+  });
+  assert.equal(status, 1);
+  assert.match(out, /^ok {4}pool file: /mu);
+  assert.match(
+    out,
+    /^ok {4}docker: at unix:\/\/\/Users\/shame\/\.colima\/default\/docker\.sock, its VM arm64 with 2 CPUs and 2048 MiB, listing 0 of this pool's containers$/mu,
+  );
+  assert.match(
+    out,
+    /^ok {4}platform: docker's VM runs Platform:Linux:Arm64, as the pool registered$/mu,
+  );
+  assert.match(err, /^warn {2}launchd agent: none; install-agent writes /mu);
+  assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);
+});
+
+test("install-agent writes an absolute node and PATH for a PATH entry relative to where it ran, since launchd runs the agent from /", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const { bin } = await binPath(t);
+  const installed = await called(["install-agent", "--pool", poolFile], {
+    home,
+    environment: { PATH: relative(process.cwd(), bin) },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  const plist = await readFile(
+    join(paths.agents, "chuggy-darwin.vteng.chuggy.shame.plist"),
+    "utf8",
+  );
+  assert.ok(plist.includes(`<string>${join(bin, "node")}</string>`), plist);
+  assert.match(
+    plist,
+    new RegExp(`<key>PATH</key>\\s*<string>${bin}</string>`, "u"),
   );
 });

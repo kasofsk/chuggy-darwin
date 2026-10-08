@@ -33,7 +33,9 @@
   "files": [
     "cli.mjs",
     "commands.mjs",
+    "doctor.mjs",
     "launchAgent.mjs",
+    "power.mjs",
     "runner.mjs",
     "runnerConfig.mjs",
     "runnerPaths.mjs"
