@@ -1,6 +1,6 @@
 # chuggy-darwin — working notes
 
-A Mac's worker pool for chuggy, being built after chuggy-linux: a CLI that registers the machine as a pool, and in time a launchd agent running the pool loop from the worker core (`@chuggy/worker-core`, kasofsk/chuggy-common) over its container backend, through docker on a Linux VM. `README.md` is the operator's page.
+A Mac's worker pool for chuggy, being built after chuggy-linux: a CLI that registers the machine as a pool and runs the pool loop from the worker core (`@chuggy/worker-core`, kasofsk/chuggy-common) over its container backend, through docker on a Linux VM, and in time a launchd agent that keeps it running. `README.md` is the operator's page.
 
 ## Where the knowledge is
 
@@ -10,7 +10,7 @@ A Mac's worker pool for chuggy, being built after chuggy-linux: a CLI that regis
 
 ## Layout
 
-Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runnerPaths.mjs` where the runner reads and writes, and `launchAgent.mjs` how a pool's agent is named. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
+Every module sits at the root. `cli.mjs` is the entry and holds nothing but the call; `commands.mjs` is the commands, `runner.mjs` a run composed from the files and docker, `runnerConfig.mjs` the runner's file and the token-file rule, `runnerPaths.mjs` where the runner reads and writes, and `launchAgent.mjs` how a pool's agent is named. Suites are `*.test.mjs` and their shared doubles `*.fixture.mjs`. `package.json`'s `files` is the shipped set, which `shipped.test.mjs` holds to every module but those, and `bundleDependencies` carries the core, the contract and zod inside the tarball, so an install needs neither git nor the contract's release.
 
 ## Checks
 
