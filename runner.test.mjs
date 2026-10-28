@@ -76,21 +76,21 @@ test("a run's setup refuses a chat host's file, which is no pool's", async (t) =
   });
 });
 
-test("a personal runner's poll asks for no session whatever the runner's file says, while a pool's asks for its sessionsMax", async (t) => {
+test("a personal runner's poll asks for no session whatever the runner's file or its entry in pools says, while a pool's asks for its entry's sessionsMax", async (t) => {
   const personal = {
     ...registeredPersonalFixture,
     capabilities: ["Platform:Linux:Arm64"],
   };
   for (const [pool, wanted] of /** @type {const} */ ([
     [personal, 0],
-    [fixturePool, 4],
+    [fixturePool, 5],
   ])) {
     const { home, poolFile } = await runnerFixture(t, {
       pool,
       runner: {
         concurrencyMax: 3,
         sessionsMax: 4,
-        pools: { "vteng.chuggy.shame": { sessionsMax: 4 } },
+        pools: { "vteng.chuggy.shame": { sessionsMax: 5 } },
       },
     });
     const setup = await runnerSetup(poolFile, home);
@@ -130,14 +130,29 @@ test("a personal runner's poll asks for no session whatever the runner's file sa
   }
 });
 
-test("a run's setup refuses a personal runner whose concurrencyMax is 0, which would take no work", async (t) => {
-  const { home, poolFile } = await runnerFixture(t, {
-    pool: registeredPersonalFixture,
+test("a personal runner whose concurrencyMax is 0 is given no client, and says why", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    pool: {
+      ...registeredPersonalFixture,
+      capabilities: ["Platform:Linux:Arm64"],
+    },
     runner: { concurrencyMax: 0, sessionsMax: 2 },
   });
-  await assert.rejects(runnerSetup(poolFile, home), {
-    message: `${poolFile} is a personal runner's, which chuggy gives no session, and concurrencyMax is 0, so it would take no work; set concurrencyMax above 0`,
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine: fakeEngine().engine,
   });
+  assert.equal(runner.client, undefined);
+  assert.match(
+    runner.idle ?? "",
+    new RegExp(
+      `^runner configuration ${paths.config.replaceAll(".", "\\.")}: concurrencyMax is 0, and a personal runner is handed no sessions`,
+      "u",
+    ),
+  );
 });
 
 test("a job is sized against the VM docker runs it in, not the Mac", async (t) => {

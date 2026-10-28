@@ -349,24 +349,33 @@ export function runnerPoolLimits(config, poolFile, identity) {
 /**
  * Why a pool's service would take no work, or nothing. The file is refused
  * where it leaves any pool's none, so only a personal runner's, holding no
- * session, is refused here: one whose `concurrencyMax` is 0.
+ * session, is refused here: one whose `concurrencyMax` is 0. Its remedy is
+ * the runner's own entry in `pools`, since the file's `concurrencyMax` would
+ * also hand jobs to a pool here kept for sessions alone, or a chat host.
  *
  * @param {RunnerConfig} config
+ * @param {string} configFile where `config` was read from
  * @param {string} poolFile
  * @param {PoolIdentity} identity
  */
-export function runnerPoolLimitsRefusal(config, poolFile, identity) {
+export function runnerPoolLimitsRefusal(
+  config,
+  configFile,
+  poolFile,
+  identity,
+) {
   const { concurrencyMax, sessionsMax } = runnerPoolLimits(
     config,
     poolFile,
     identity,
   );
   if (concurrencyMax > 0 || sessionsMax > 0) return undefined;
+  const own = `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
   const key =
     runnerPoolOwn(config, poolFile)?.concurrencyMax === undefined
       ? "concurrencyMax"
-      : `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
-  return `${poolFile} is a personal runner's, which chuggy gives no session, and ${key} is 0, so it would take no work; set ${key} above 0`;
+      : own;
+  return `runner configuration ${configFile}: ${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set ${own} above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`;
 }
 
 /**

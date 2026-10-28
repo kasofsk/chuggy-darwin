@@ -653,10 +653,15 @@ async function runnerConfigChecked(input, credentials, findings) {
   const idle =
     credentials === undefined
       ? undefined
-      : runnerPoolLimitsRefusal(config, input.poolFile, credentials);
+      : runnerPoolLimitsRefusal(
+          config,
+          input.paths.config,
+          input.poolFile,
+          credentials,
+        );
   const detail = [
-    `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile, credentials)}`,
-    ...(idle === undefined ? [] : [idle]),
+    idle ??
+      `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile, credentials)}`,
     ...unmatched.map(
       (name) =>
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,

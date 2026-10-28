@@ -157,7 +157,7 @@ test("doctor names a personal runner's jobs alone among its limits, and fails on
       {
         pools: { "vteng.chuggy.shame": { concurrencyMax: 0, sessionsMax: 1 } },
       },
-      /^FAIL {2}runner configuration: .+\/runner\.json: concurrencyMax 0, as pools\.vteng\.chuggy\.shame sets it; .+\/vteng\.chuggy\.shame\.json is a personal runner's, which chuggy gives no session, and pools\.vteng\.chuggy\.shame\.concurrencyMax is 0, so it would take no work; set pools\.vteng\.chuggy\.shame\.concurrencyMax above 0$/u,
+      /^FAIL {2}runner configuration: runner configuration .+\/runner\.json: pools\.vteng\.chuggy\.shame\.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools\.vteng\.chuggy\.shame\.concurrencyMax above 0 and load its agent again, or run your chats on a chat host \(chuggy-darwin register --chat\) and unload this agent$/u,
     ],
   ];
   for (const [runner, line] of cases) {
