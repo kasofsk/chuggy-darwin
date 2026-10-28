@@ -146,7 +146,7 @@ A member's chat host runs their chats in chuggy on this Mac, under their own Cla
 chuggy-darwin register --api <chuggy's origin> --token=<token> --chat
 ```
 
-It asks docker nothing and declares nothing, so it takes no `--pool`, `--personal`, `--host` or `--capability`. The file is named for the tenant and the member, ending `.chat.host.json`, or `chat-host-<digest>.json` when that name would be longer than a launchd label takes. The commands a pool's file takes serve it as a chat host's, the file's kind deciding which; `once` and `stop` refuse it, since a chat host runs only as its service and its sessions are stopped in chuggy:
+It asks docker nothing and declares nothing, so it takes no `--pool`, `--personal`, `--host` or `--capability`. The file is named for the tenant and the member, ending `.chat.host.json`, or `chat-host-<digest>.json` when that name would be longer than the agent's file can be named for. The commands a pool's file takes serve it as a chat host's, the file's kind deciding which; `once` and `stop` refuse it, since a chat host runs only as its service and its sessions are stopped in chuggy:
 
 ```sh
 chuggy-darwin run --pool <file>  # until the plane denies the host
