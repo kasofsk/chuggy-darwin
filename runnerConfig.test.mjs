@@ -24,6 +24,7 @@ import {
   runnerCredentialDescribed,
   runnerCredentialsHanded,
   runnerConfig,
+  runnerChatSettings,
   runnerConfigLimits,
   runnerPoolLimits,
 } from "./runnerConfig.mjs";
@@ -634,4 +635,49 @@ test("a directory is not a runner configuration", async (t) => {
   const { paths } = await runnerFixture(t, { runner: undefined });
   await mkdir(paths.config, { recursive: true, mode: 0o700 });
   await assert.rejects(runnerConfig(paths.config), /is not a file/u);
+});
+
+test("a chat host runs two sessions idle at most ten minutes, under the file's output bound and the image chuggy names, unless chat says otherwise", async (t) => {
+  const { paths } = await runnerFixture(t);
+  assert.deepEqual(runnerChatSettings(await runnerConfig(paths.config)), {
+    sessionsMax: 2,
+    idleSecs: 600,
+    outputBytesMax: 65536,
+  });
+  const set = await runnerFixture(t, {
+    runner: {
+      chat: {
+        image: { image: "ghcr.io/shame/chat:1" },
+        sessionsMax: 4,
+        idleSecs: 120,
+        outputBytesMax: 4096,
+      },
+    },
+  });
+  assert.deepEqual(runnerChatSettings(await runnerConfig(set.paths.config)), {
+    sessionsMax: 4,
+    idleSecs: 120,
+    outputBytesMax: 4096,
+    image: { image: "ghcr.io/shame/chat:1", pull: "missing" },
+  });
+});
+
+test("what chat may not say is refused, naming where", async (t) => {
+  const refused = [
+    [{ sessions: 2 }, /chat/u],
+    [{ sessionsMax: 0 }, /chat\.sessionsMax/u],
+    [{ idleSecs: 1.5 }, /chat\.idleSecs/u],
+    [{ outputBytesMax: -1 }, /chat\.outputBytesMax/u],
+    [{ image: "ghcr.io/shame/chat:1" }, /chat\.image/u],
+    [{ image: { image: "x", pull: "sometimes" } }, /chat\.image\.pull/u],
+    [{ image: { image: "x", tag: "1" } }, /chat\.image/u],
+  ];
+  for (const [chat, line] of refused) {
+    const { paths } = await runnerFixture(t, { runner: { chat } });
+    await assert.rejects(
+      runnerConfig(paths.config),
+      line,
+      JSON.stringify(chat),
+    );
+  }
 });

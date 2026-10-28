@@ -29,6 +29,10 @@ import {
   claudeCredentialSchema,
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
+import {
+  chatHostIdleSecs,
+  chatHostImageSettingSchema,
+} from "@chuggy/worker-core/chatHost.mjs";
 import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
@@ -58,6 +62,22 @@ const freeGibMax = Math.floor(Number.MAX_SAFE_INTEGER / 2 ** 30);
 const poolLimitsSchema = z.strictObject({
   concurrencyMax: nonnegativeSchema.optional(),
   sessionsMax: nonnegativeSchema.optional(),
+});
+
+/**
+ * A member's chat host's own settings, each its default where the section or
+ * the key is absent: its own image in place of the one chuggy names, and its
+ * bounds.
+ */
+const chatSchema = z.strictObject({
+  /** The image the supervisor runs in place of the one chuggy names, and when it is pulled. */
+  image: chatHostImageSettingSchema.optional(),
+  /** The most sessions the host runs at once. */
+  sessionsMax: positiveSchema.default(2),
+  /** How long a session the host claims may sit idle, which chuggy caps. */
+  idleSecs: positiveSchema.default(chatHostIdleSecs),
+  /** What a session may write of its output; the file's `outputBytesMax` where it names none. */
+  outputBytesMax: positiveSchema.optional(),
 });
 
 /** A name docker gives a network, less the host's own. */
@@ -178,6 +198,8 @@ export const runnerConfigSchema = z
     memoryReservedGib: nonnegativeSchema.max(freeGibMax).default(0),
     /** Whether a run installs the release chuggy names, or only says it is out. */
     autoUpdate: z.boolean().default(true),
+    /** A member's chat host's settings. */
+    chat: chatSchema.prefault({}),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {
@@ -366,6 +388,23 @@ export function runnerConfigLimits(config, poolFile) {
       ? ""
       : `, as pools.${runnerPoolName(poolFile)} sets them`;
   return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own}`;
+}
+
+/**
+ * What a chat host runs with of a checked file: its `chat` section, its
+ * `outputBytesMax` the file's where the section names none.
+ *
+ * @param {RunnerConfig} config
+ * @returns {{sessionsMax: number, idleSecs: number, outputBytesMax: number, image?: import("@chuggy/worker-core/chatHost.mjs").ChatHostImageSetting}}
+ */
+export function runnerChatSettings(config) {
+  const { image, sessionsMax, idleSecs, outputBytesMax } = config.chat;
+  return {
+    sessionsMax,
+    idleSecs,
+    outputBytesMax: outputBytesMax ?? config.outputBytesMax,
+    ...(image === undefined ? {} : { image }),
+  };
 }
 
 /**
