@@ -119,15 +119,15 @@ const engineCallTimeoutMs = 300_000;
 export const socketPathBytesMax = 103;
 
 /**
- * Why `poolFile` is not one a pool's commands run, or nothing: a chat host's
- * is run by the `chat` commands.
+ * Why `poolFile` is not one a pool's run, or nothing: a chat host's is run
+ * as one, which the commands choose by the file's kind.
  *
  * @param {PoolCredentials} credentials
  * @param {string} poolFile
  */
 export function poolFileRefusal(credentials, poolFile) {
   return poolIdentityChatHost(credentials)
-    ? `${poolFile} is a chat host's, not a pool's; run it with chuggy-darwin chat run`
+    ? `${poolFile} is a chat host's, not a pool's`
     : undefined;
 }
 

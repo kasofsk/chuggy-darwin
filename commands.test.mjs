@@ -186,12 +186,9 @@ test("a call asked wrongly exits 2 with the usage", async () => {
     ["status", "--capability", "Tool:Bazel", "--pool", "/p"],
     ["register", "--pools", "/p"],
     [...registerArgv, "extra"],
-    ["chat", "--pool", "/p"],
-    ["chat", "frobnicate", "--pool", "/p"],
-    ["chat", "run", "extra", "--pool", "/p"],
-    ["chat", "status", "--chat", "--pool", "/p"],
-    ["chat", "doctor", "--personal", "--pool", "/p"],
+    ["chat", "run", "--pool", "/p"],
     ["run", "--chat", "--pool", "/p"],
+    ["doctor", "--chat", "--pool", "/p"],
   ]) {
     const { status, err } = await called(argv);
     assert.equal(status, 2, argv.join(" "));
@@ -1334,7 +1331,7 @@ const registeredChat = registeredChatHostFixture;
 /** The file a chat host's registration writes, less `.json`. */
 const chatBase = `${personalBase}.chat.host`;
 
-test("register --chat redeems a member's chat host token for its file, declaring nothing and asking docker nothing, and names the chat commands next", async (t) => {
+test("register --chat redeems a member's chat host token for its file, declaring nothing and asking docker nothing, and names the commands that check it and write its agent next", async (t) => {
   const machine = await home(t);
   const { fetch, requests } = answeringFetch(201, registeredChat);
   const { engine, state } = fakeEngine();
@@ -1350,8 +1347,8 @@ test("register --chat redeems a member's chat host token for its file, declaring
     out,
     [
       `wrote ${file}; next:`,
-      `  chuggy-darwin chat doctor --pool ${file}`,
-      `  chuggy-darwin chat install-agent --pool ${file}`,
+      `  chuggy-darwin doctor --pool ${file}`,
+      `  chuggy-darwin install-agent --pool ${file}`,
     ].join("\n"),
   );
   assert.equal(err, "");
@@ -1397,28 +1394,27 @@ test("register --chat beside a pool's or a personal runner's options exits 2 bef
   assert.equal(requests.length, 0);
 });
 
-test("registering a chat host its agent here runs says the agent runs the earlier registration, and restarts the chat agent", async (t) => {
+test("a chat host's agent is named for its file as a pool's is and runs `run`, and registering again restarts it", async (t) => {
   const machine = await home(t);
   const argv = [...registerArgv, "--chat"];
   const { fetch } = answeringFetch(201, registeredChat);
   const PATH = await dockerPath(t);
   const file = join(machine, ".config", "chuggy", "pools", `${chatBase}.json`);
   assert.equal((await called(argv, { home: machine, fetch })).status, 0);
-  const installed = await called(["chat", "install-agent", "--pool", file], {
+  const installed = await called(["install-agent", "--pool", file], {
     home: machine,
     environment: { PATH },
   });
   assert.equal(installed.status, 0, installed.err);
-  const label = `chuggy-darwin-chat.${chatBase}`;
+  const label = `chuggy-darwin.${chatBase}`;
   const plist = join(machine, "Library", "LaunchAgents", `${label}.plist`);
   assert.equal(
     installed.out.split("\n")[0],
     `wrote ${plist}; start it, and Colima at login, with:`,
   );
-  assert.match(
-    await readFile(plist, "utf8"),
-    /<string>chat<\/string>\s*<string>run<\/string>\s*<string>--pool<\/string>/u,
-  );
+  const written = await readFile(plist, "utf8");
+  assert.match(written, /<string>run<\/string>\s*<string>--pool<\/string>/u);
+  assert.ok(!written.includes("<string>chat</string>"));
   const again = await called(argv, { home: machine, fetch });
   assert.equal(
     again.out,
@@ -1429,40 +1425,24 @@ test("registering a chat host its agent here runs says the agent runs the earlie
   );
 });
 
-test("a chat host's file is refused by a pool's commands, and a pool's by the chat commands, each naming the other", async (t) => {
-  const pool = await runnerFixture(t);
+test("a chat host's file refuses once and stop, which only a pool's serve", async (t) => {
   const chat = await chatFixture(t);
-  const PATH = await dockerPath(t);
-  for (const argv of [["run"], ["once"], ["status"], ["install-agent"]]) {
+  for (const [argv, line] of /** @type {const} */ ([
+    [
+      ["once"],
+      "a chat host runs only as its service; start it with chuggy-darwin run",
+    ],
+    [["stop", "assignment-1"], "a chat host's sessions are stopped in chuggy"],
+  ])) {
+    const { engine, state } = fakeEngine();
     const { status, err } = await called([...argv, "--pool", chat.poolFile], {
       home: chat.home,
-      environment: { PATH },
+      engine,
     });
-    assert.equal(status, 1, argv.join(" "));
-    assert.equal(
-      err,
-      `${chat.poolFile} is a chat host's, not a pool's; run it with chuggy-darwin chat run`,
-    );
+    assert.equal(status, 2, argv.join(" "));
+    assert.equal(err, line);
+    assert.deepEqual(state.calls, []);
   }
-  for (const argv of [["run"], ["status"], ["install-agent"]]) {
-    const { status, err } = await called(
-      ["chat", ...argv, "--pool", pool.poolFile],
-      { home: pool.home, environment: { PATH } },
-    );
-    assert.equal(status, 1, argv.join(" "));
-    assert.equal(
-      err,
-      `${pool.poolFile} is a pool's or a personal runner's, not a chat host's; run it with chuggy-darwin run`,
-    );
-  }
-  const doctored = await called(["doctor", "--pool", chat.poolFile], {
-    home: chat.home,
-  });
-  assert.equal(doctored.status, 1);
-  assert.match(
-    doctored.err,
-    /^FAIL {2}pool file: .* is a chat host's, not a pool's; run it with chuggy-darwin chat run$/mu,
-  );
 });
 
 test("a chat host the plane denies is done, holding the Mac awake while it serves and leaving no socket behind", async (t) => {
@@ -1470,14 +1450,11 @@ test("a chat host the plane denies is done, holding the Mac awake while it serve
   const { engine, state } = fakeEngine();
   /** @type {boolean[]} */
   const held = [];
-  const { status, out, err } = await called(
-    ["chat", "run", "--pool", poolFile],
-    {
-      home,
-      engine,
-      power: { held: (holding) => held.push(holding), asserted: () => false },
-    },
-  );
+  const { status, out, err } = await called(["run", "--pool", poolFile], {
+    home,
+    engine,
+    power: { held: (holding) => held.push(holding), asserted: () => false },
+  });
   assert.equal(status, 0, err);
   assert.match(out, /^made the network chuggy-jobs$/mu);
   assert.deepEqual(held, [true, false]);
@@ -1490,7 +1467,7 @@ test("a chat host whose credential shares its directory is refused before it ser
   const { home, poolFile, tokenFile } = await chatFixture(t);
   await writeFile(join(dirname(tokenFile), "notes"), "x");
   const { engine, state } = fakeEngine();
-  const { status, err } = await called(["chat", "run", "--pool", poolFile], {
+  const { status, err } = await called(["run", "--pool", poolFile], {
     home,
     engine,
   });
@@ -1499,12 +1476,12 @@ test("a chat host whose credential shares its directory is refused before it ser
   assert.deepEqual(state.calls, []);
 });
 
-test("chat status names the settings, what the service says of its supervisor and images, and the supervisor's container", async (t) => {
+test("status of a chat host names the settings, what the service says of its supervisor and images, and the supervisor's container", async (t) => {
   const { home, poolFile, paths } = await chatFixture(t, {
     runner: { chat: { sessionsMax: 3 } },
   });
   const { engine, state } = fakeEngine();
-  const stopped = await called(["chat", "status", "--pool", poolFile], {
+  const stopped = await called(["status", "--pool", poolFile], {
     home,
     engine,
   });
@@ -1534,7 +1511,7 @@ test("chat status names the settings, what the service says of its supervisor an
       },
     ],
   );
-  const served = await called(["chat", "status", "--pool", poolFile], {
+  const served = await called(["status", "--pool", poolFile], {
     home,
     engine,
   });
@@ -1573,15 +1550,16 @@ function probedEngine(owner) {
   return { engine: probed, state };
 }
 
-test("chat doctor checks the host's file, the credential's layout, docker, the image, pulled, and the owner the VM presents the credential as", async (t) => {
+test("doctor of a chat host checks the host's file, the credential's layout, docker, the image, pulled, and the owner the VM presents the credential as", async (t) => {
   const { home, poolFile, tokenFile } = await chatFixture(t, {
     runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
   });
   const { engine, state } = probedEngine("0 0");
-  const { status, out, err } = await called(
-    ["chat", "doctor", "--pool", poolFile],
-    { home, engine, tokens: issuedTokens },
-  );
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
   assert.equal(status, 0, err);
   const checks = out
     .split("\n")
@@ -1602,7 +1580,7 @@ test("chat doctor checks the host's file, the credential's layout, docker, the i
   ]);
   assert.match(
     err,
-    /^warn {2}launchd agent: none; chat install-agent writes .*\/chuggy-darwin-chat\.vteng\.member\.chat\.host\.plist$/mu,
+    /^warn {2}launchd agent: none; install-agent writes .*\/chuggy-darwin\.vteng\.member\.chat\.host\.plist$/mu,
   );
   assert.match(
     err,
@@ -1633,7 +1611,7 @@ test("chat doctor checks the host's file, the credential's layout, docker, the i
   );
 });
 
-test("chat doctor fails a credential the VM presents as a session's user's, or as anyone's but root's, and one sharing its directory", async (t) => {
+test("doctor of a chat host fails a credential the VM presents as a session's user's, or as anyone's but root's, and one sharing its directory", async (t) => {
   const { home, poolFile, tokenFile } = await chatFixture(t, {
     runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
   });
@@ -1644,15 +1622,16 @@ test("chat doctor fails a credential the VM presents as a session's user's, or a
     ],
     ["501 20", /as uid 501, gid 20, not as root's;/u],
   ])) {
-    const { status, err } = await called(
-      ["chat", "doctor", "--pool", poolFile],
-      { home, engine: probedEngine(owner).engine, tokens: issuedTokens },
-    );
+    const { status, err } = await called(["doctor", "--pool", poolFile], {
+      home,
+      engine: probedEngine(owner).engine,
+      tokens: issuedTokens,
+    });
     assert.equal(status, 1);
     assert.match(err, line);
   }
   await writeFile(join(dirname(tokenFile), "notes"), "x");
-  const shared = await called(["chat", "doctor", "--pool", poolFile], {
+  const shared = await called(["doctor", "--pool", poolFile], {
     home,
     engine: probedEngine("0 0").engine,
     tokens: issuedTokens,
@@ -1664,12 +1643,12 @@ test("chat doctor fails a credential the VM presents as a session's user's, or a
   );
 });
 
-test("chat doctor fails a host's own image it may never pull and that is not here, and runs nothing in it", async (t) => {
+test("doctor of a chat host fails a host's own image it may never pull and that is not here, and runs nothing in it", async (t) => {
   const { home, poolFile } = await chatFixture(t, {
     runner: { chat: { image: { image: "mine:1", pull: "never" } } },
   });
   const { engine, state } = probedEngine("0 0");
-  const { status, err } = await called(["chat", "doctor", "--pool", poolFile], {
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
     home,
     engine,
     tokens: issuedTokens,
@@ -1685,7 +1664,7 @@ test("chat doctor fails a host's own image it may never pull and that is not her
 /** A session image in the chat host's registry, as the plane names one. */
 const namedImage = `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`;
 
-test("chat doctor polls for the image chuggy names where no service runs, naming the host's idle bound, and pulls it under the pool's token", async (t) => {
+test("doctor of a chat host polls for the image chuggy names where no service runs, naming the host's idle bound, and pulls it under the pool's token", async (t) => {
   const { home, poolFile } = await chatFixture(t);
   const { fetch, requests } = answeringFetch(200, {
     assignments: [],
@@ -1694,10 +1673,12 @@ test("chat doctor polls for the image chuggy names where no service runs, naming
     chatImage: namedImage,
   });
   const { engine, state } = probedEngine("0 0");
-  const { status, out, err } = await called(
-    ["chat", "doctor", "--pool", poolFile],
-    { home, engine, fetch, tokens: issuedTokens },
-  );
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    fetch,
+    tokens: issuedTokens,
+  });
   assert.equal(status, 0, err);
   assert.match(
     out,
@@ -1722,7 +1703,7 @@ test("chat doctor polls for the image chuggy names where no service runs, naming
   assert.match(pull?.authFile ?? "", /registry\.chuggy\.example/u);
 });
 
-test("chat doctor takes the image chuggy named from the running service, and polls nothing", async (t) => {
+test("doctor of a chat host takes the image chuggy named from the running service, and polls nothing", async (t) => {
   const { home, poolFile, paths } = await chatFixture(t);
   await controlServed(
     t,
@@ -1732,10 +1713,12 @@ test("chat doctor takes the image chuggy named from the running service, and pol
   const { fetch, requests } = answeringFetch(500, "");
   const { engine, state } = probedEngine("0 0");
   state.images.add(namedImage);
-  const { status, out, err } = await called(
-    ["chat", "doctor", "--pool", poolFile],
-    { home, engine, fetch, tokens: issuedTokens },
-  );
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    fetch,
+    tokens: issuedTokens,
+  });
   assert.equal(status, 0, err);
   assert.match(
     out,

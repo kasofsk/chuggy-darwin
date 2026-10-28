@@ -571,35 +571,33 @@ async function planeChecks(input, credentials, findings) {
 }
 
 /**
- * Where the agent of `kind` named for the pool file is, and its text where
- * there is a file there, refused where the pool file's name makes no agent's.
+ * Where the agent named for the pool file is, and its text where there is a
+ * file there, refused where the pool file's name makes no agent's.
  *
  * @param {Pick<DoctorInput, "paths" | "poolFile">} input
- * @param {import("./launchAgent.mjs").LaunchAgentKind} [kind]
  * @returns {Promise<{plist: string, text: string | undefined}>}
  */
-async function agentPlist(input, kind) {
+async function agentPlist(input) {
   const plist = join(
     input.paths.agents,
-    launchAgentFileName(launchAgentLabel(input.poolFile, kind)),
+    launchAgentFileName(launchAgentLabel(input.poolFile)),
   );
   return { plist, text: await readFile(plist, "utf8").catch(() => undefined) };
 }
 
 /**
- * Whether an agent of `kind` serves the pool file, which a pool run from a
- * terminal need not have, so its absence is a warning.
+ * Whether an agent serves the pool file, which a pool run from a terminal
+ * need not have, so its absence is a warning.
  *
  * @param {Pick<DoctorInput, "paths" | "poolFile">} input
- * @param {import("./launchAgent.mjs").LaunchAgentKind} [kind]
  * @returns {Promise<DoctorFinding>}
  */
-export async function agentFinding(input, kind) {
+export async function agentFinding(input) {
   const check = "launchd agent";
   let plist;
   let text;
   try {
-    ({ plist, text } = await agentPlist(input, kind));
+    ({ plist, text } = await agentPlist(input));
   } catch (failure) {
     return {
       check,
@@ -615,7 +613,7 @@ export async function agentFinding(input, kind) {
     warning: true,
     detail:
       text === undefined
-        ? `none; ${kind === "Chat" ? "chat install-agent" : "install-agent"} writes ${plist}`
+        ? `none; install-agent writes ${plist}`
         : `${plist} serves another pool file`,
   };
 }

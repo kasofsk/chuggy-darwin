@@ -146,13 +146,13 @@ A member's chat host runs their chats in chuggy on this Mac, under their own Cla
 chuggy-darwin register --api <chuggy's origin> --token=<token> --chat
 ```
 
-It asks docker nothing and declares nothing, so it takes no `--pool`, `--personal`, `--host` or `--capability`. The file is named for the tenant and the member, ending `.chat.host.json`. The pool commands refuse it, and the `chat` commands refuse any other file:
+It asks docker nothing and declares nothing, so it takes no `--pool`, `--personal`, `--host` or `--capability`. The file is named for the tenant and the member, ending `.chat.host.json`. The commands a pool's file takes serve it as a chat host's, the file's kind deciding which; `once` and `stop` refuse it, since a chat host runs only as its service and its sessions are stopped in chuggy:
 
 ```sh
-chuggy-darwin chat run --pool <file>  # until the plane denies the host
-chuggy-darwin chat status --pool <file>
-chuggy-darwin chat doctor --pool <file>
-chuggy-darwin chat install-agent --pool <file>
+chuggy-darwin run --pool <file>  # until the plane denies the host
+chuggy-darwin status --pool <file>
+chuggy-darwin doctor --pool <file>
+chuggy-darwin install-agent --pool <file>
 ```
 
 The host reads runner.json's Claude credential, `network` and `autoUpdate`, and its own `chat` section, whose every key is optional and which refuses any other:
@@ -170,9 +170,9 @@ The host reads runner.json's Claude credential, `network` and `autoUpdate`, and 
 
 **The supervisor runs as root**, with docker's capabilities cut to those it needs to start a session as another user, no new privileges, and no memory cap: it shares Colima's VM with any pool here, whose memory budget counts it. Sessions' homes and the repositories' mirrors are kept in two docker volumes in the VM, `chuggy-chat-<digest>-sessions` and `-mirrors`, and each session's log in `~/Library/Logs/chuggy-darwin/`, a file of its own only you can read, which stops growing at a cap. docker keeps no log of the supervisor.
 
-It needs Colima's vz VM with virtiofs mounts, Colima's default, and the credential under your home; Docker Desktop and other mount types are untested. The session image must name the users a session runs as, as chuggy's worker image does. `chat doctor` checks the host's file, runner.json's `chat`, the credential and its directory, docker, the network, the host's token, the session image, which it pulls where it is missing, and, running that image once as the supervisor runs, that the VM presents the credential to root as root's. Where no `chat run` serves the file, it polls once to learn the image chuggy names. `chat status` says whether the service runs, the settings, the supervisor's phase and image, and its container.
+It needs Colima's vz VM with virtiofs mounts, Colima's default, and the credential under your home; Docker Desktop and other mount types are untested. The session image must name the users a session runs as, as chuggy's worker image does. `doctor` checks the host's file, runner.json's `chat`, the credential and its directory, docker, the network, the host's token, the session image, which it pulls where it is missing, and, running that image once as the supervisor runs, that the VM presents the credential to root as root's. Where no `run` serves the file, it polls once to learn the image chuggy names. `status` says whether the service runs, the settings, the supervisor's phase and image, and its container.
 
-`chat install-agent` writes `~/Library/LaunchAgents/chuggy-darwin-chat.<file less .json>.plist`, which runs `chat run` beside any pool's agent, as a pool's agent runs `run`, and logs to `~/Library/Logs/chuggy-darwin/chuggy-darwin-chat.<file less .json>.log`. `chat run` exits 0 when the plane denies the host and 75 once it has installed a release of itself; launchd restarts it on any exit but 0. While it runs, it keeps the Mac from idle sleep, since a member's chat may come at any time. Registering again prints the `launchctl kickstart` that restarts the agent on the new registration.
+`install-agent` writes its agent as it writes a pool's, named for the file, `~/Library/LaunchAgents/chuggy-darwin.<file less .json>.plist`, which runs `run` beside any pool's agent and logs to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<file less .json>.log`. `run` exits 0 when the plane denies the host and 75 once it has installed a release of itself; launchd restarts it on any exit but 0. While it runs, it keeps the Mac from idle sleep, since a member's chat may come at any time. Registering again prints the `launchctl kickstart` that restarts the agent on the new registration.
 
 ## Tools for your coding agent
 

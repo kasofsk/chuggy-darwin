@@ -4,9 +4,9 @@
  * pool, which is done, since nothing but a new registration brings the pool
  * back, and ends `updatedExitStatus` when it installed a release of itself to
  * run again on. `once` fails on any pass that did not reconcile, a denial
- * among them. A member's chat host is served by the `chat` commands, which
- * take its file as the others take a pool's, and `chat run` ends as `run`
- * does.
+ * among them. A member's chat host's file is served by the same commands,
+ * the file's kind choosing which: `run` ends as a pool's does, and `once` and
+ * `stop` are refused of it.
  */
 
 import { constants } from "node:fs";
@@ -43,7 +43,6 @@ import {
 import { chatDoctorFindings } from "./chatDoctor.mjs";
 import {
   chatCredentialRefusal,
-  chatFileRefusal,
   chatHostParts,
   chatSettingsLine,
   chatSetup,
@@ -54,7 +53,6 @@ import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
-  chatAgentBaseCharsMax,
   launchAgentBackground,
   launchAgentBaseCharsMax,
   launchAgentCommands,
@@ -71,7 +69,6 @@ import {
   dockerMachine,
   hostPlatform,
   jobNetwork,
-  poolFileRefusal,
   poolRuntimeDirectory,
   poolSocket,
   runnerDirectories,
@@ -121,7 +118,6 @@ import { runnerPaths } from "./runnerPaths.mjs";
 export const poolFileVariable = "CHUGGY_DARWIN_POOL";
 
 const usage = `usage: chuggy-darwin <command> [--pool <file>]
-       chuggy-darwin chat <command> [--pool <file>]
        chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
                               [--host] [--capability <token>]...
        chuggy-darwin register --api <origin> --token=<token> --chat
@@ -148,13 +144,9 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   mcp                     serve chuggy's tools for one project to a coding
                           agent on stdio, under your own sign-in
 
-  chat run                serve a member's chat host until the plane denies
-                          it, or until it installs the release chuggy names
-  chat status             the chat host's settings and its supervisor
-  chat doctor             check everything the chat host needs
-  chat install-agent      write the launchd agent that runs \`chat run\`
-
-The pool file is --pool, or ${poolFileVariable}.`;
+The pool file is --pool, or ${poolFileVariable}. A member's chat host's file
+is run, its status asked, checked and given its agent by the same commands;
+once and stop refuse it.`;
 
 /**
  * The copy of this runner that is speaking.
@@ -361,23 +353,17 @@ async function onPath(path, name) {
 }
 
 /**
- * Writes the pool file's own agent of `kind`, refusing a file of the other
- * kind's, or an agent of its name that serves another file. The agent is
+ * Writes the pool file's own agent, refusing an agent of its name that
+ * serves another file. The agent is
  * given this shell's PATH, since launchd's own holds no Homebrew docker, each
  * entry made absolute since launchd runs an agent from `/`, and runs the node
  * that PATH finds, a link an upgrade keeps, rather than the versioned binary
  * running this.
  *
  * @param {CliCall} call
- * @param {import("./launchAgent.mjs").LaunchAgentKind} [kind]
  */
-async function installAgent(call, kind = "Pool") {
-  const credentials = await poolCredentials(call.poolFile);
-  const refusal = (kind === "Chat" ? chatFileRefusal : poolFileRefusal)(
-    credentials,
-    call.poolFile,
-  );
-  if (refusal !== undefined) throw new Error(refusal);
+async function installAgent(call) {
+  await poolCredentials(call.poolFile);
   const paths = runnerPaths(call.host.home);
   const path = (call.host.environment.PATH ?? "")
     .split(delimiter)
@@ -393,7 +379,7 @@ async function installAgent(call, kind = "Pool") {
     throw new Error(
       "node is not on this shell's PATH, which the agent is given; run this from the shell the runner was installed from",
     );
-  const label = launchAgentLabel(call.poolFile, kind);
+  const label = launchAgentLabel(call.poolFile);
   const plist = join(paths.agents, launchAgentFileName(label));
   const existing = await plistText(plist);
   const served =
@@ -417,7 +403,6 @@ async function installAgent(call, kind = "Pool") {
       path,
       log: join(paths.logs, `${label}.log`),
       background,
-      kind,
     }),
   );
   const commands = launchAgentCommands({
@@ -460,7 +445,7 @@ async function register(host, { capability, host: hosted, ...named }) {
     return 2;
   }
   if (ask.checked.kind === "ChatHost")
-    return await registerFiled(host, ask.checked, "Chat");
+    return await registerFiled(host, ask.checked);
   const platform = hostPlatform(host.arch);
   if (hosted === true && platform === undefined) {
     host.err(
@@ -482,27 +467,26 @@ async function register(host, { capability, host: hosted, ...named }) {
     return 2;
   }
   if ("none" in agents) host.err(agents.none);
-  return await registerFiled(host, requested.request, "Pool");
+  return await registerFiled(host, requested.request);
 }
 
 /**
  * Spends the token on `request` and writes the file chuggy answers, named so
- * that its agent of `kind` can be, then says what comes next: the restart of
- * the agent already serving the file, or the commands that check it and
- * write its agent.
+ * that its agent can be, then says what comes next: the restart of the agent
+ * already serving the file, or the commands that check it and write its
+ * agent.
  *
  * @param {CliHost} host
  * @param {import("@chuggy/worker-core/register.mjs").RegisterRequest} request
- * @param {import("./launchAgent.mjs").LaunchAgentKind} kind
  */
-async function registerFiled(host, request, kind) {
+async function registerFiled(host, request) {
   const { pools, agents } = runnerPaths(host.home);
   await registerPoolDirectory(pools);
   const pool = await registerRedeemed(request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(
     pools,
     pool,
-    kind === "Chat" ? chatAgentBaseCharsMax : launchAgentBaseCharsMax,
+    launchAgentBaseCharsMax,
   ).catch((/** @type {unknown} */ failure) => {
     throw new Error(
       `the pool file could not be written, and the token is spent, so mint another: ${failure instanceof Error ? failure.message : String(failure)}`,
@@ -511,7 +495,7 @@ async function registerFiled(host, request, kind) {
   });
   await poolCredentials(file);
   const verb = replaced ? "replaced" : "wrote";
-  const label = launchAgentLabel(file, kind);
+  const label = launchAgentLabel(file);
   const agent = await plistText(join(agents, launchAgentFileName(label))).catch(
     () => undefined,
   );
@@ -526,10 +510,9 @@ async function registerFiled(host, request, kind) {
     );
     return 0;
   }
-  const command = kind === "Chat" ? "chuggy-darwin chat" : "chuggy-darwin";
   host.out(`${verb} ${file}; next:`);
-  host.out(`  ${command} doctor --pool ${shellQuoted(file)}`);
-  host.out(`  ${command} install-agent --pool ${shellQuoted(file)}`);
+  host.out(`  chuggy-darwin doctor --pool ${shellQuoted(file)}`);
+  host.out(`  chuggy-darwin install-agent --pool ${shellQuoted(file)}`);
   return 0;
 }
 
@@ -644,11 +627,7 @@ async function chatRun(call) {
     return runnerEnded(await parts.host.run(), {
       log: call.host.out,
       updates,
-      underAgent: launchAgentRunning(
-        call.host.environment,
-        call.poolFile,
-        "Chat",
-      ),
+      underAgent: launchAgentRunning(call.host.environment, call.poolFile),
     });
   } finally {
     parts.power.held(false);
@@ -757,13 +736,44 @@ const commands = {
   "install-agent": installAgent,
 };
 
-/** @type {Record<string, (call: CliCall) => Promise<number>>} */
+/**
+ * A pool's command, refused of a chat host.
+ *
+ * @param {string} why
+ */
+function chatRefused(why) {
+  /** @param {CliCall} call */
+  return async (call) => {
+    call.host.err(why);
+    return 2;
+  };
+}
+
+/** Each command of a chat host's file. */
 const chatCommands = {
   run: chatRun,
+  once: chatRefused(
+    "a chat host runs only as its service; start it with chuggy-darwin run",
+  ),
   status: chatStatus,
+  stop: chatRefused("a chat host's sessions are stopped in chuggy"),
   doctor: chatDoctor,
-  "install-agent": (call) => installAgent(call, "Chat"),
+  "install-agent": installAgent,
 };
+
+/**
+ * Whether the pool file is a member's chat host's, and not where it cannot
+ * be read, which the pool's command then says.
+ *
+ * @param {string} poolFile
+ */
+async function poolFileChatHost(poolFile) {
+  try {
+    return poolIdentityChatHost(await poolCredentials(poolFile));
+  } catch {
+    return false;
+  }
+}
 
 /** Every option a command is parsed with. */
 const cliOptions = /** @type {const} */ ({
@@ -810,15 +820,9 @@ export async function cliMain(argv, host) {
   }
   if (name === "mcp") return await mcp(host, values, positionals);
   const registering = name === "register";
-  const chatting = name === "chat";
-  const [chatName, ...chatPositionals] = positionals;
-  const command = chatting
-    ? Object.hasOwn(chatCommands, chatName ?? "")
-      ? chatCommands[/** @type {string} */ (chatName)]
-      : undefined
-    : Object.hasOwn(commands, name ?? "")
-      ? commands[/** @type {keyof typeof commands} */ (name)]
-      : undefined;
+  const command = Object.hasOwn(commands, name ?? "")
+    ? commands[/** @type {keyof typeof commands} */ (name)]
+    : undefined;
   if (
     (!registering &&
       (command === undefined ||
@@ -829,8 +833,7 @@ export async function cliMain(argv, host) {
         values.host !== undefined ||
         values.capability !== undefined)) ||
     mcpOptions.some((option) => values[option] !== undefined) ||
-    (chatting && chatPositionals.length > 0) ||
-    (!chatting && name !== "stop" && positionals.length > 0)
+    (name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
     return 2;
@@ -844,11 +847,11 @@ export async function cliMain(argv, host) {
   }
   try {
     if (registering) return await register(host, values);
-    return await /** @type {(call: CliCall) => Promise<number>} */ (command)({
-      host,
-      poolFile: resolve(/** @type {string} */ (poolFile)),
-      positionals: chatting ? chatPositionals : positionals,
-    });
+    const resolved = resolve(/** @type {string} */ (poolFile));
+    const chosen = (await poolFileChatHost(resolved))
+      ? chatCommands[/** @type {keyof typeof chatCommands} */ (name)]
+      : /** @type {(call: CliCall) => Promise<number>} */ (command);
+    return await chosen({ host, poolFile: resolved, positionals });
   } catch (failure) {
     host.err(failure instanceof Error ? failure.message : String(failure));
     return 1;
