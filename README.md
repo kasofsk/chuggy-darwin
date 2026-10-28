@@ -38,7 +38,7 @@ A member's personal runner runs only that member's work, in the projects they al
 chuggy-darwin register --api <chuggy's origin> --token=<token> --personal
 ```
 
-It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. Registering again here writes this machine's file over; the registration it held before stays in chuggy, offline once nothing runs it, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
+It takes no `--pool`, and the file is named for the tenant and the member: `vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.json`. A member may register a personal runner on each of their machines, and every one serves the same projects. It takes jobs alone: chuggy gives a personal runner no session, so its member's chats run on their chat host. Registering again here writes this machine's file over; the registration it held before stays in chuggy, offline once nothing runs it, until its member removes it in chuggy's console. Every other command takes its file as it takes a pool's.
 
 ## Run
 
@@ -56,7 +56,7 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 
 `claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `codexCredential` (none), `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`), `images` (none), `capabilities` (none, never a platform, each once), `pools` (none), `imageUnusedSecsMax` (a week, 604800), `diskFreeGibMin` (20), `memoryFreeGibMin` (0), `memoryReservedGib` (0), `autoUpdate` (`true`) and `reportMetrics` (`false`) are optional. `reportMetrics` `true` has each pool's agent report its work, the Mac's name, and Colima's VM's CPUs, load, memory and free disk against the floor to chuggy, whose Grafana shows them. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
 
-Each pool's agent runs `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A personal runner that takes jobs beside a project's pool kept for its lead:
+Each pool's agent runs `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A personal runner's agent runs no session, whatever `sessionsMax` or its entry in `pools` says, so one whose `concurrencyMax` is 0 is refused, as taking no work. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A personal runner that takes jobs beside a project's pool kept for its lead:
 
 ```json
 "concurrencyMax": 2,
@@ -140,7 +140,7 @@ It cannot update a copy npm did not install globally, or one under a prefix this
 
 ## Chat host
 
-A member's chat host runs their chats in chuggy on this Mac, under their own Claude credential. It takes no jobs. Each chat is a session in one container, the supervisor, which runs for as long as the host does and starts each session as a user of its own. While a member's chat host is not live, their personal runner takes their chats. The member mints a chat host token for the tenant through chuggy's API, `POST /api/v1/tenants/:tenant/chat-host-registration-tokens`, then:
+A member's chat host runs their chats in chuggy on this Mac, under their own Claude credential. It takes no jobs. Each chat is a session in one container, the supervisor, which runs for as long as the host does and starts each session as a user of its own. The member mints a chat host token for the tenant through chuggy's API, `POST /api/v1/tenants/:tenant/chat-host-registration-tokens`, then:
 
 ```sh
 chuggy-darwin register --api <chuggy's origin> --token=<token> --chat

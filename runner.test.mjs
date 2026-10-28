@@ -45,6 +45,7 @@ import {
   vmPlatformsFound,
 } from "./runner.mjs";
 import { updatedExitStatus } from "./launchAgent.mjs";
+import { registeredPersonalFixture } from "./register.fixture.mjs";
 import {
   chatFixture,
   fixturePool,
@@ -72,6 +73,70 @@ test("a run's setup refuses a chat host's file, which is no pool's", async (t) =
   const { home, poolFile } = await chatFixture(t);
   await assert.rejects(runnerSetup(poolFile, home), {
     message: `${poolFile} is a chat host's, not a pool's`,
+  });
+});
+
+test("a personal runner's poll asks for no session whatever the runner's file says, while a pool's asks for its sessionsMax", async (t) => {
+  const personal = {
+    ...registeredPersonalFixture,
+    capabilities: ["Platform:Linux:Arm64"],
+  };
+  for (const [pool, wanted] of /** @type {const} */ ([
+    [personal, 0],
+    [fixturePool, 4],
+  ])) {
+    const { home, poolFile } = await runnerFixture(t, {
+      pool,
+      runner: {
+        concurrencyMax: 3,
+        sessionsMax: 4,
+        pools: { "vteng.chuggy.shame": { sessionsMax: 4 } },
+      },
+    });
+    const setup = await runnerSetup(poolFile, home);
+    const runner = await runnerParts(setup, {
+      colima: fakeColima(90).colima,
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+      tokens: {
+        acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+        invalidate: () => undefined,
+      },
+    });
+    /** @type {number[]} */
+    const asked = [];
+    const client = {
+      ...runner.client,
+      plane: {
+        ...runner.client.plane,
+        /** @type {typeof runner.client.plane.poll} */
+        poll: async (_token, _held, _wanted, sessions) => {
+          asked.push(sessions);
+          return {
+            polled: "Reconciled",
+            assignments: [],
+            sessions: [],
+            stop: [],
+          };
+        },
+      },
+    };
+    await runnerDirectories(setup.paths, runner.runtime);
+    const pass = await workerPoolClientPass(client);
+    assert.equal(pass.passed, "Reconciled", JSON.stringify(pass));
+    assert.deepEqual(asked, [wanted], pool.tenant);
+  }
+});
+
+test("a run's setup refuses a personal runner whose concurrencyMax is 0, which would take no work", async (t) => {
+  const { home, poolFile } = await runnerFixture(t, {
+    pool: registeredPersonalFixture,
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+  });
+  await assert.rejects(runnerSetup(poolFile, home), {
+    message: `${poolFile} is a personal runner's, which chuggy gives no session, and concurrencyMax is 0, so it would take no work; set concurrencyMax above 0`,
   });
 });
 

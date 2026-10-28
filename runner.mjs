@@ -73,6 +73,7 @@ import {
   runnerCredentialDescribed,
   runnerCredentialsHanded,
   runnerPoolLimits,
+  runnerPoolLimitsRefusal,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -136,7 +137,7 @@ export function poolFileRefusal(credentials, poolFile) {
 
 /**
  * The pool's file and the runner's, read, refused where the pool's is a chat
- * host's.
+ * host's or the runner's leaves it no work.
  *
  * @param {string} poolFile
  * @param {string} home
@@ -147,12 +148,10 @@ export async function runnerSetup(poolFile, home) {
   const credentials = await poolCredentials(poolFile);
   const refusal = poolFileRefusal(credentials, poolFile);
   if (refusal !== undefined) throw new Error(refusal);
-  return {
-    poolFile,
-    credentials,
-    config: await runnerConfig(paths.config),
-    paths,
-  };
+  const config = await runnerConfig(paths.config);
+  const idle = runnerPoolLimitsRefusal(config, poolFile, credentials);
+  if (idle !== undefined) throw new Error(idle);
+  return { poolFile, credentials, config, paths };
 }
 
 /**
@@ -556,7 +555,7 @@ function runnerClient(setup, backend, seams, vm) {
   return poolRunnerClient(
     credentials,
     backend,
-    runnerPoolLimits(config, setup.poolFile),
+    runnerPoolLimits(config, setup.poolFile, credentials),
     {
       tokens: seams.tokens,
       fetch: seams.fetch,
