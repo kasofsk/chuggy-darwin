@@ -61,3 +61,47 @@ export async function runnerFixture(t, documents = {}) {
     );
   return { home, paths, poolFile, tokenFile };
 }
+
+/** A member's chat host's file, as chuggy answers its redemption. */
+export const fixtureChatHost = {
+  kind: "ChatHost",
+  tenant: "vteng",
+  owner: "28:https://issuer.chuggy.example/member",
+  tokenUrl: "https://issuer.chuggy.example/oauth2/token",
+  audience: "https://chuggy.example",
+  planeUrl: "https://chuggy.example/pool",
+  registryHost: "registry.chuggy.example",
+  clientId: "chat-client",
+  clientSecret: "chat-client-secret",
+};
+
+/**
+ * A Mac's files for a chat host: its file, the runner's, and a Claude token
+ * file alone in a directory of its own, as a chat host's must be.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {{runner?: Record<string, unknown>}} [documents]
+ */
+export async function chatFixture(t, documents = {}) {
+  const home = await mkdtemp("/tmp/cdc-");
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const paths = runnerPaths(home);
+  const poolFile = await ownerOnly(
+    join(paths.pools, "vteng.member.chat.host.json"),
+    JSON.stringify(fixtureChatHost),
+  );
+  const tokenFile = await ownerOnly(
+    join(home, ".claude-chat", "token"),
+    "claude-token-fixture",
+  );
+  await ownerOnly(
+    paths.config,
+    JSON.stringify({
+      claudeTokenFile: tokenFile,
+      timeoutSecsMax: 3600,
+      outputBytesMax: 65536,
+      ...documents.runner,
+    }),
+  );
+  return { home, paths, poolFile, tokenFile };
+}

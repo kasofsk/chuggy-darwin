@@ -51,6 +51,7 @@ import {
 import {
   dockerEndpoint,
   dockerMachine,
+  poolFileRefusal,
   poolRuntimeDirectory,
   poolSocket,
   rosettaPlatform,
@@ -103,7 +104,7 @@ import {
  * @param {() => Promise<[T, string]>} probe
  * @returns {Promise<T | undefined>}
  */
-async function checked(findings, check, probe) {
+export async function checked(findings, check, probe) {
   try {
     const [value, detail] = await probe();
     findings.push({ check, passed: true, detail });
@@ -223,7 +224,7 @@ async function hostAgentFound(input, config, command, runtime) {
  * @param {boolean} host whether a job may run on the Mac itself
  * @returns {Promise<DoctorFinding>}
  */
-async function claudeCredentialFinding(input, config, host) {
+export async function claudeCredentialFinding(input, config, host) {
   const check = "Claude credential";
   const credential = runnerClaudeCredential(config);
   const file = claudeCredentialFile(credential);
@@ -463,14 +464,16 @@ function amd64Unrun(rosetta) {
 }
 
 /**
- * @param {DoctorInput} input
+ * Docker, where its context reaches it, with its VM and how many containers
+ * of the pool file's it lists.
+ *
+ * @param {import("@chuggy/worker-core/engine.mjs").Engine} engine
  * @param {PoolCredentials} credentials
- * @param {RunnerConfig} config
  * @param {DoctorFinding[]} findings
+ * @param {string} whose the pool file's, as a person names it
  */
-async function engineChecks(input, credentials, config, findings) {
-  const engine = input.parts.engine();
-  const machine = await checked(findings, "docker", async () => {
+export function dockerChecked(engine, credentials, findings, whose) {
+  return checked(findings, "docker", async () => {
     const endpoint = await dockerEndpoint(engine);
     const vm = await dockerMachine(engine);
     const listed = await engine.exec(listArgv(poolLabelValue(credentials)));
@@ -478,18 +481,46 @@ async function engineChecks(input, credentials, config, findings) {
     const count = listed.stdout.split("\n").filter((id) => id.trim()).length;
     return [
       vm,
-      `at ${endpoint}, its VM ${vm.arch} with ${String(vm.size.cpuMillis / 1000)} CPUs and ${String(vm.size.memoryMib)} MiB, listing ${String(count)} of this pool's containers`,
+      `at ${endpoint}, its VM ${vm.arch} with ${String(vm.size.cpuMillis / 1000)} CPUs and ${String(vm.size.memoryMib)} MiB, listing ${String(count)} of ${whose} containers`,
     ];
   });
-  if (machine === undefined) return;
-  findings.push(await capabilitiesFinding(input, credentials, config, machine));
-  await checked(findings, "job network", async () => {
-    const inspected = await engine.exec(networkInspectArgv(config.network));
-    if (inspected.code === 0) return [true, `${config.network} is present`];
+}
+
+/**
+ * The network a run starts its containers on, there or made by a run.
+ *
+ * @param {import("@chuggy/worker-core/engine.mjs").Engine} engine
+ * @param {string} network
+ * @param {DoctorFinding[]} findings
+ * @param {string} check
+ */
+export function networkChecked(engine, network, findings, check) {
+  return checked(findings, check, async () => {
+    const inspected = await engine.exec(networkInspectArgv(network));
+    if (inspected.code === 0) return [true, `${network} is present`];
     if (engineFailure(inspected) === "NotFound")
-      return [true, `${config.network} is missing, and a run makes it`];
+      return [true, `${network} is missing, and a run makes it`];
     throw new Error(engineFailureLine(inspected));
   });
+}
+
+/**
+ * @param {DoctorInput} input
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @param {DoctorFinding[]} findings
+ */
+async function engineChecks(input, credentials, config, findings) {
+  const engine = input.parts.engine();
+  const machine = await dockerChecked(
+    engine,
+    credentials,
+    findings,
+    "this pool's",
+  );
+  if (machine === undefined) return;
+  findings.push(await capabilitiesFinding(input, credentials, config, machine));
+  await networkChecked(engine, config.network, findings, "job network");
   const disk = await diskFloorSaid(config, engine, input.parts.colima());
   findings.push(
     disk.warning
@@ -504,16 +535,31 @@ async function engineChecks(input, credentials, config, findings) {
 }
 
 /**
+ * A token the pool file's issuer issues.
+ *
+ * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} tokens
+ * @param {PoolCredentials} credentials
+ * @param {DoctorFinding[]} findings
+ */
+export function poolTokenChecked(tokens, credentials, findings) {
+  return checked(findings, "pool token", async () => {
+    const acquired = await tokens.acquire();
+    if (acquired.acquired !== "Token") throw new Error(acquired.evidence);
+    return [acquired.token, `issued by ${credentials.tokenUrl}`];
+  });
+}
+
+/**
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {DoctorFinding[]} findings
  */
 async function planeChecks(input, credentials, findings) {
-  const token = await checked(findings, "pool token", async () => {
-    const acquired = await input.parts.tokens(credentials).acquire();
-    if (acquired.acquired !== "Token") throw new Error(acquired.evidence);
-    return [acquired.token, `issued by ${credentials.tokenUrl}`];
-  });
+  const token = await poolTokenChecked(
+    input.parts.tokens(credentials),
+    credentials,
+    findings,
+  );
   if (token === undefined) return;
   await checked(findings, "plane", async () => {
     const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
@@ -528,7 +574,7 @@ async function planeChecks(input, credentials, findings) {
  * Where the agent named for the pool file is, and its text where there is a
  * file there, refused where the pool file's name makes no agent's.
  *
- * @param {DoctorInput} input
+ * @param {Pick<DoctorInput, "paths" | "poolFile">} input
  * @returns {Promise<{plist: string, text: string | undefined}>}
  */
 async function agentPlist(input) {
@@ -543,10 +589,10 @@ async function agentPlist(input) {
  * Whether an agent serves the pool file, which a pool run from a terminal
  * need not have, so its absence is a warning.
  *
- * @param {DoctorInput} input
+ * @param {Pick<DoctorInput, "paths" | "poolFile">} input
  * @returns {Promise<DoctorFinding>}
  */
-async function agentFinding(input) {
+export async function agentFinding(input) {
   const check = "launchd agent";
   let plist;
   let text;
@@ -643,7 +689,7 @@ function nextRelease(runner) {
  * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} updates
  * @returns {Promise<DoctorFinding>}
  */
-async function updatesFinding(updates) {
+export async function updatesFinding(updates) {
   const check = "updates";
   if (!updates.on)
     return {
@@ -684,6 +730,8 @@ export async function doctorFindings(input) {
   const findings = [];
   const credentials = await checked(findings, "pool file", async () => {
     const read = await poolCredentials(input.poolFile);
+    const refusal = poolFileRefusal(read, input.poolFile);
+    if (refusal !== undefined) throw new Error(refusal);
     return [
       read,
       `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,

@@ -635,3 +635,47 @@ test("a directory is not a runner configuration", async (t) => {
   await mkdir(paths.config, { recursive: true, mode: 0o700 });
   await assert.rejects(runnerConfig(paths.config), /is not a file/u);
 });
+
+test("a chat host's section is read as the core's schema reads it, absent where the file names none", async (t) => {
+  const { paths } = await runnerFixture(t);
+  assert.equal((await runnerConfig(paths.config)).chat, undefined);
+  const set = await runnerFixture(t, {
+    runner: {
+      chat: {
+        image: { image: "ghcr.io/shame/chat:1" },
+        sessionsMax: 3,
+        sessionMemoryMib: 1024,
+        idleSecs: 120,
+        outputBytesMax: 4096,
+      },
+    },
+  });
+  assert.deepEqual((await runnerConfig(set.paths.config)).chat, {
+    image: { image: "ghcr.io/shame/chat:1", pull: "missing" },
+    sessionsMax: 3,
+    sessionMemoryMib: 1024,
+    idleSecs: 120,
+    outputBytesMax: 4096,
+  });
+});
+
+test("what chat may not say is refused, naming where", async (t) => {
+  const refused = [
+    [{ sessions: 2 }, /chat/u],
+    [{ sessionsMax: 0 }, /chat\.sessionsMax/u],
+    [{ sessionMemoryMib: 1 }, /chat\.sessionMemoryMib/u],
+    [{ idleSecs: 1.5 }, /chat\.idleSecs/u],
+    [{ outputBytesMax: -1 }, /chat\.outputBytesMax/u],
+    [{ image: "ghcr.io/shame/chat:1" }, /chat\.image/u],
+    [{ image: { image: "x", pull: "sometimes" } }, /chat\.image\.pull/u],
+    [{ image: { image: "x", tag: "1" } }, /chat\.image/u],
+  ];
+  for (const [chat, line] of refused) {
+    const { paths } = await runnerFixture(t, { runner: { chat } });
+    await assert.rejects(
+      runnerConfig(paths.config),
+      line,
+      JSON.stringify(chat),
+    );
+  }
+});

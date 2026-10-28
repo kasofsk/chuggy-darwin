@@ -29,6 +29,7 @@ import {
   claudeCredentialSchema,
   claudeCredentialSetting,
 } from "@chuggy/worker-core/claudeCredential.mjs";
+import { chatHostConfigSchema } from "@chuggy/worker-core/chatHost.mjs";
 import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
@@ -178,6 +179,8 @@ export const runnerConfigSchema = z
     memoryReservedGib: nonnegativeSchema.max(freeGibMax).default(0),
     /** Whether a run installs the release chuggy names, or only says it is out. */
     autoUpdate: z.boolean().default(true),
+    /** A member's chat host's settings, each the core's default where absent. */
+    chat: chatHostConfigSchema.optional(),
   })
   // Beside whatever else the file gets wrong, as a missing key always was.
   .superRefine(configCredentialNamed, {

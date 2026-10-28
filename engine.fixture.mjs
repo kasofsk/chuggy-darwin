@@ -450,6 +450,13 @@ function answer(state, call) {
   }
   if (verb === "container") return inspected(state, call.argv.slice(2));
   if (verb === "kill") return killed(state, last);
+  if (verb === "rm" && !call.argv.includes("--force")) {
+    const container = found(state, last);
+    if (container?.status === "running")
+      return failed(
+        `Error response from daemon: cannot remove container "/${container.name}": container is running: stop the container before removing or force remove`,
+      );
+  }
   if (verb === "rm")
     return changed(state, last, (container) => {
       state.containers.delete(container.name);

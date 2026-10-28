@@ -1,6 +1,6 @@
 # chuggy-darwin
 
-Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It registers the machine as a pool and runs the pool, from a terminal or under a launchd agent that keeps it running. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs, and, for a pool registered with `--host`, on the Mac itself.
+Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It registers the machine as a pool and runs the pool, from a terminal or under a launchd agent that keeps it running. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs, and, for a pool registered with `--host`, on the Mac itself. It also runs a member's [chat host](#chat-host).
 
 It needs Node 24 or later, the docker CLI and Colima: `brew install node docker colima`, then `colima start`. On Apple silicon, install Rosetta too, `softwareupdate --install-rosetta --agree-to-license`, and start Colima with `colima start --vz-rosetta`: most work asks for amd64, which an arm64 VM takes only where it runs amd64 through Rosetta, since QEMU, which it runs amd64 through otherwise, is many times slower.
 
@@ -137,6 +137,43 @@ A run keeps itself on the release chuggy names for it. Once chuggy names a newer
 Before installing a release, it checks that the release is this package, newer than the copy running, downloaded from chuggy-darwin's own GitHub releases, byte for byte the one chuggy named, and that it runs under the run's Node and names its own version. Only then does npm install it where this copy is installed. A release that fails a check, or an install that fails, leaves the running copy serving, and the log says why and when it tries again.
 
 It cannot update a copy npm did not install globally, or one under a prefix this user cannot write. `doctor` says whether updates are on, and warns where this install cannot take one. To turn them off, set `"autoUpdate": false` in runner.json and restart the agent; the log then says only that a release is out.
+
+## Chat host
+
+A member's chat host runs their chats in chuggy on this Mac, under their own Claude credential. It takes no jobs. Each chat is a session in one container, the supervisor, which runs for as long as the host does and starts each session as a user of its own. While a member's chat host is not live, their personal runner takes their chats. The member mints a chat host token for the tenant through chuggy's API, `POST /api/v1/tenants/:tenant/chat-host-registration-tokens`, then:
+
+```sh
+chuggy-darwin register --api <chuggy's origin> --token=<token> --chat
+```
+
+It asks docker nothing and declares nothing, so it takes no `--pool`, `--personal`, `--host` or `--capability`. The file is named for the tenant and the member, ending `.chat.host.json`, or `chat-host-<digest>.json` when that name would be longer than the agent's file can be named for. The commands a pool's file takes serve it as a chat host's, the file's kind deciding which; `once` and `stop` refuse it, since a chat host runs only as its service and its sessions are stopped in chuggy:
+
+```sh
+chuggy-darwin run --pool <file>  # until the plane denies the host
+chuggy-darwin status --pool <file>
+chuggy-darwin doctor --pool <file>
+chuggy-darwin install-agent --pool <file>
+```
+
+The host reads runner.json's Claude credential, `network` and `autoUpdate`, and its own `chat` section, whose every key is optional and which refuses any other:
+
+```json
+"chat": { "sessionsMax": 4, "sessionMemoryMib": 2048, "idleSecs": 600, "image": { "image": "ghcr.io/you/chat:1", "pull": "missing" } }
+```
+
+- **`chat.sessionsMax`** (4): the most sessions the host runs at once.
+- **`chat.sessionMemoryMib`** (2048): the memory the supervisor is given for each of those. The supervisor is capped at `sessionsMax` times this, swap included, so the default cap is 8 GiB.
+- **`chat.idleSecs`** (600): how long a session may sit idle before it ends, which chuggy caps.
+- **`chat.outputBytesMax`** (runner.json's `outputBytesMax`): the most a session may write of its output.
+- **`chat.image`** (none): the host's own session image, run in place of the one chuggy names, and pulled `always`, where `missing` from the VM, or `never`. An image chuggy names is pulled where it is missing, under the host's token where it is in chuggy's registry.
+
+**The credential is handed whole, so it lives alone.** The supervisor is handed the Claude credential's directory, read-only, where root alone in its container may enter, and hands each session the credential itself. The file must be the only entry in its directory and not a link, or the host refuses to start. Colima's virtiofs share presents a file to whoever asks of it as theirs, and lets any user in the VM read it, so the supervisor, told the credential is root's, reads it as root holding no capability, and no session's user can reach it, since only root enters its directory. Another process in the VM reading the same file at that moment, such as a job handed the same credential, can make it appear briefly as that process's user; a session that starts then fails to, and the next one starts.
+
+**The supervisor runs as root**, with docker's capabilities cut to those it needs to start a session as another user, no new privileges, and the memory cap above: it shares Colima's VM with any pool here, whose memory budget counts it, so give Colima room for both. Sessions' homes and the repositories' mirrors are kept in two docker volumes in the VM, `chuggy-chat-<digest>-sessions` and `-mirrors`, and each session's log in `~/Library/Logs/chuggy-darwin/`, a file of its own only you can read, which keeps its end once it reaches a cap. A log that cannot be written stops, and the host's log says so once. docker keeps no log of the supervisor.
+
+It needs Colima's vz VM with virtiofs mounts, Colima's default, and the credential under your home; Docker Desktop and other mount types are untested. The session image must name the users a session runs as, as chuggy's worker image does. `doctor` checks the host's file, runner.json's `chat`, the credential and its directory, docker, the network, the supervisor's container, the memory cap, warning where it is more than the VM has, the host's token, the session image, which it pulls where it is missing, and, running that image once as the supervisor runs but with no capability, that root reads the credential through the share as the supervisor will. Where no `run` serves the file, it polls once to learn the image chuggy names. A supervisor's container left running where no service of the host answers refuses every start beside it, and `doctor` names the `docker rm -f` that removes it; a run removes one that has exited. A service that answers what this copy cannot read, such as an older copy mid-update, still holds its supervisor, which `doctor` warns of and never names for removal. `status` says whether the service runs, the settings, the supervisor's phase and image, and its container.
+
+`install-agent` writes its agent as it writes a pool's, named for the file, `~/Library/LaunchAgents/chuggy-darwin.<file less .json>.plist`, which runs `run` beside any pool's agent and logs to `~/Library/Logs/chuggy-darwin/chuggy-darwin.<file less .json>.log`. `run` exits 0 when the plane denies the host and 75 once it has installed a release of itself; launchd restarts it on any exit but 0. While it runs, it keeps the Mac from idle sleep, since a member's chat may come at any time. Registering again replaces the host's registration, and chuggy denies the earlier one, so its agent stops; the command prints the `launchctl kickstart` that restarts it on the new one.
 
 ## Tools for your coding agent
 

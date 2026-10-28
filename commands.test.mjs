@@ -20,18 +20,33 @@ import { createHash } from "node:crypto";
 import { workerRunnerHeader } from "@chuggy/worker-contract/workerPool";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  poolIdentityDigest,
+  poolLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 
 import { cliMain } from "./commands.mjs";
-import { controlServed, inFlightFixture } from "./control.fixture.mjs";
+import {
+  chatServed,
+  controlServed,
+  inFlightFixture,
+} from "./control.fixture.mjs";
 import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
   answeringFetch,
+  registeredChatHostFixture,
   registeredFixture,
   registeredPersonalFixture,
 } from "./register.fixture.mjs";
 import { launchAgentLabel, updatedExitStatus } from "./launchAgent.mjs";
 import { poolRuntimeDirectory, runnerReleasePrefix } from "./runner.mjs";
-import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import {
+  chatFixture,
+  fixtureChatHost,
+  fixturePool,
+  ownerOnly,
+  runnerFixture,
+} from "./runner.fixture.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
@@ -48,6 +63,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts]
  * @property {string} [cli] the copy's entry, where not one installed outside npm's global directory
  * @property {boolean} [desktop] `false` where the user is not logged in at the Mac's screen
+ * @property {import("./power.mjs").PowerAssertion} [power] where not one asserting nothing
  */
 
 /** The version the suite's copy says it is. */
@@ -103,6 +119,7 @@ async function called(argv, machine = {}) {
     cli: machine.cli ?? "/opt/chuggy-darwin/cli.mjs",
     updatePorts: machine.updatePorts,
     desktop: async () => machine.desktop ?? true,
+    power: machine.power ?? { held: () => undefined, asserted: () => false },
     out: (line) => out.push(line),
     err: (line) => err.push(line),
   });
@@ -176,6 +193,9 @@ test("a call asked wrongly exits 2 with the usage", async () => {
     ["status", "--capability", "Tool:Bazel", "--pool", "/p"],
     ["register", "--pools", "/p"],
     [...registerArgv, "extra"],
+    ["chat", "run", "--pool", "/p"],
+    ["run", "--chat", "--pool", "/p"],
+    ["doctor", "--chat", "--pool", "/p"],
   ]) {
     const { status, err } = await called(argv);
     assert.equal(status, 2, argv.join(" "));
@@ -1310,4 +1330,591 @@ test("install-agent writes an absolute node and PATH for a PATH entry relative t
     plist,
     new RegExp(`<key>PATH</key>\\s*<string>${bin}</string>`, "u"),
   );
+});
+
+/** What chuggy answers a chat host's redemption from this Mac with. */
+const registeredChat = registeredChatHostFixture;
+
+/** The file a chat host's registration writes, less `.json`. */
+const chatBase = `${personalBase}.chat.host`;
+
+test("register --chat redeems a member's chat host token for its file, declaring nothing and asking docker nothing, and names the commands that check it and write its agent next", async (t) => {
+  const machine = await home(t);
+  const { fetch, requests } = answeringFetch(201, registeredChat);
+  const { engine, state } = fakeEngine();
+  state.unreachable = true;
+  const { status, out, err } = await called([...registerArgv, "--chat"], {
+    home: machine,
+    fetch,
+    engine,
+  });
+  assert.equal(status, 0, err);
+  const file = join(machine, ".config", "chuggy", "pools", `${chatBase}.json`);
+  assert.equal(
+    out,
+    [
+      `wrote ${file}; next:`,
+      `  chuggy-darwin doctor --pool ${file}`,
+      `  chuggy-darwin install-agent --pool ${file}`,
+    ].join("\n"),
+  );
+  assert.equal(err, "");
+  assert.deepEqual(state.calls, []);
+  assert.equal(
+    requests[0].url,
+    "https://chuggy.example/api/v1/personal-runner-registrations",
+  );
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
+    token: "registration-token-fixture",
+    capabilities: [],
+  });
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), registeredChat);
+  assert.ok(!`${out}${err}`.includes(registeredChat.clientSecret));
+});
+
+test("register --chat beside a pool's or a personal runner's options exits 2 before the token is spent", async (t) => {
+  const machine = await home(t);
+  const { fetch, requests } = answeringFetch(201, registeredChat);
+  for (const [extra, line] of /** @type {const} */ ([
+    [["--personal"], /^--chat registers a chat host and --personal/u],
+    [["--pool", "shame"], /^--pool names a pool, and a chat host names none/u],
+    [
+      ["--host"],
+      /declares nothing; register it without --capability or --host/u,
+    ],
+    [
+      ["--capability", "Tool:Xcode"],
+      /declares nothing; register it without --capability or --host/u,
+    ],
+  ])) {
+    const { status, err } = await called(
+      [...registerArgv, "--chat", ...extra],
+      {
+        home: machine,
+        fetch,
+      },
+    );
+    assert.equal(status, 2, extra.join(" "));
+    assert.match(err, line);
+  }
+  assert.equal(requests.length, 0);
+});
+
+test("a chat host's agent is named for its file as a pool's is and runs `run`, and registering again restarts it", async (t) => {
+  const machine = await home(t);
+  const argv = [...registerArgv, "--chat"];
+  const { fetch } = answeringFetch(201, registeredChat);
+  const PATH = await dockerPath(t);
+  const file = join(machine, ".config", "chuggy", "pools", `${chatBase}.json`);
+  assert.equal((await called(argv, { home: machine, fetch })).status, 0);
+  const installed = await called(["install-agent", "--pool", file], {
+    home: machine,
+    environment: { PATH },
+  });
+  assert.equal(installed.status, 0, installed.err);
+  const label = `chuggy-darwin.${chatBase}`;
+  const plist = join(machine, "Library", "LaunchAgents", `${label}.plist`);
+  assert.equal(
+    installed.out.split("\n")[0],
+    `wrote ${plist}; start it, and Colima at login, with:`,
+  );
+  const written = await readFile(plist, "utf8");
+  assert.match(written, /<string>run<\/string>\s*<string>--pool<\/string>/u);
+  assert.ok(!written.includes("<string>chat</string>"));
+  const again = await called(argv, { home: machine, fetch });
+  assert.equal(
+    again.out,
+    [
+      `replaced ${file}; chuggy denies the earlier registration, so its agent stops until it is restarted:`,
+      `  launchctl kickstart -k gui/${String(process.getuid?.())}/${label}`,
+    ].join("\n"),
+  );
+});
+
+test("a chat host's file refuses once and stop, which only a pool's serve", async (t) => {
+  const chat = await chatFixture(t);
+  for (const [argv, line] of /** @type {const} */ ([
+    [
+      ["once"],
+      "a chat host runs only as its service; start it with chuggy-darwin run",
+    ],
+    [["stop", "assignment-1"], "a chat host's sessions are stopped in chuggy"],
+  ])) {
+    const { engine, state } = fakeEngine();
+    const { status, err } = await called([...argv, "--pool", chat.poolFile], {
+      home: chat.home,
+      engine,
+    });
+    assert.equal(status, 2, argv.join(" "));
+    assert.equal(err, line);
+    assert.deepEqual(state.calls, []);
+  }
+});
+
+test("a chat host the plane denies is done, holding the Mac awake while it serves and leaving no socket behind", async (t) => {
+  const { home, poolFile, paths } = await chatFixture(t);
+  const { engine, state } = fakeEngine();
+  /** @type {boolean[]} */
+  const held = [];
+  const { status, out, err } = await called(["run", "--pool", poolFile], {
+    home,
+    engine,
+    power: { held: (holding) => held.push(holding), asserted: () => false },
+  });
+  assert.equal(status, 0, err);
+  assert.match(out, /^made the network chuggy-jobs$/mu);
+  assert.deepEqual(held, [true, false]);
+  assert.ok(state.networks.has("chuggy-jobs"));
+  const runtime = poolRuntimeDirectory(paths, fixtureChatHost);
+  assert.deepEqual(await readdir(runtime), []);
+});
+
+test("a chat host whose credential shares its directory is refused before it serves", async (t) => {
+  const { home, poolFile, tokenFile } = await chatFixture(t);
+  await writeFile(join(dirname(tokenFile), "notes"), "x");
+  const { engine, state } = fakeEngine();
+  const { status, err } = await called(["run", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(status, 1);
+  assert.match(err, /keep the credential in a directory of its own$/u);
+  assert.deepEqual(state.calls, []);
+});
+
+test("status of a chat host names the settings, what the service says of its supervisor and images, and the supervisor's container", async (t) => {
+  const { home, poolFile, paths } = await chatFixture(t, {
+    runner: { chat: { sessionsMax: 3 } },
+  });
+  const { engine, state } = fakeEngine();
+  const stopped = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(stopped.status, 0, stopped.err);
+  assert.equal(
+    stopped.out,
+    [
+      "service: not running",
+      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor's memory is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+    ].join("\n"),
+  );
+  assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
+    "ps",
+    "--all",
+    "--filter",
+    `label=io.chuggy.pool=${poolLabelValue(fixtureChatHost)}`,
+  ]);
+  await chatServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
+    {
+      named: "registry.chuggy.example/worker@sha256:2",
+      used: "registry.chuggy.example/worker@sha256:1",
+      supervisor: "Ready",
+      starting: true,
+    },
+  );
+  const served = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(served.status, 0, served.err);
+  assert.deepEqual(served.out.split("\n").slice(2), [
+    "supervisor: ready, starting another, running registry.chuggy.example/worker@sha256:1",
+    "image: chuggy names registry.chuggy.example/worker@sha256:2",
+  ]);
+  assert.equal(served.out.split("\n")[0], "service: running");
+});
+
+/** A token source that issues the pool's token. */
+const issuedTokens = {
+  acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+  invalidate: () => undefined,
+};
+
+/**
+ * Docker held in memory, its VM room for the default supervisor's cap,
+ * answering the doctor's probe of the credential with the owner given, or
+ * with the probe's failure to read it where none is.
+ *
+ * @param {string | undefined} owner `uid gid`, as the probe prints them
+ */
+function probedEngine(owner) {
+  const { engine, state } = fakeEngine();
+  state.machine.memoryBytes = 16 * 2 ** 30;
+  /** @type {import("@chuggy/worker-core/engine.mjs").Engine} */
+  const probed = {
+    ...engine,
+    exec: async (argv, call) => {
+      const answer = await engine.exec(argv, call);
+      if (argv[0] !== "run" || !argv.includes("-e")) return answer;
+      return owner === undefined
+        ? {
+            code: 1,
+            stdout: "",
+            stderr:
+              "Error: EACCES: permission denied, open '/var/run/chuggy/credentials/provider/token'\n",
+          }
+        : { ...answer, stdout: `${owner}\n` };
+    },
+  };
+  return { engine: probed, state };
+}
+
+/**
+ * The doctor's probe ran as the supervisor would, but for its volumes and
+ * network, its environment's values in docker's own, and nothing removed by
+ * force.
+ *
+ * @param {import("./engine.fixture.mjs").FakeEngineState} state
+ * @param {string} tokenFile
+ */
+function probeAsserted(state, tokenFile) {
+  const probe = state.calls.find(
+    (call) => call.argv[0] === "run" && call.argv.includes("-e"),
+  );
+  assert.ok(probe !== undefined);
+  for (const [flag, value] of [
+    ["--network", "none"],
+    ["--user", "0:0"],
+  ])
+    assert.deepEqual(
+      probe.argv.slice(probe.argv.indexOf(flag), probe.argv.indexOf(flag) + 2),
+      [flag, value],
+    );
+  assert.ok(!probe.argv.some((arg) => arg.startsWith("type=volume")));
+  assert.deepEqual(
+    probe.argv.filter((arg, index) =>
+      ["--cap-drop", "--cap-add"].includes(probe.argv[index - 1] ?? ""),
+    ),
+    ["ALL"],
+  );
+  assert.ok(
+    probe.argv.includes(
+      `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/provider,readonly`,
+    ),
+  );
+  assert.ok(state.calls.every(({ argv }) => !argv.includes("--force")));
+  assert.ok(
+    probe.argv.every((arg) => !/^CHUG_[A-Z_]+=/u.test(arg)),
+    "no variable's value is in the argv",
+  );
+  assert.equal(
+    probe.environment.CHUG_CHAT_CREDENTIAL,
+    "/var/run/chuggy/credentials/provider/token",
+  );
+}
+
+test("doctor of a chat host checks the host's file, the credential's layout, docker, the image, pulled, and the owner the VM presents the credential as", async (t) => {
+  const { home, poolFile, tokenFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const { engine, state } = probedEngine("0 0");
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 0, err);
+  const checks = out
+    .split("\n")
+    .slice(1)
+    .map((line) => line.replace(/: .*$/u, ""));
+  assert.deepEqual(checks, [
+    "ok    chat host file",
+    "ok    runner configuration",
+    "ok    Claude credential",
+    "ok    credential layout",
+    "ok    control socket",
+    "ok    docker",
+    "ok    network",
+    "ok    supervisor container",
+    "ok    memory cap",
+    "ok    pool token",
+    "ok    session image",
+    "ok    image pulled",
+    "ok    credential owner",
+  ]);
+  assert.match(
+    err,
+    /^warn {2}launchd agent: none; install-agent writes .*\/chuggy-darwin\.vteng\.member\.chat\.host\.plist$/mu,
+  );
+  assert.match(
+    err,
+    /^warn {2}updates: on, but this install cannot take a release/mu,
+  );
+  assert.match(out, /image pulled: ghcr\.io\/shame\/chat:1 was pulled$/mu);
+  assert.match(
+    out,
+    /credential owner: root, holding no capability, reads it as the supervisor would, the VM presenting it as uid 0, gid 0$/mu,
+  );
+  probeAsserted(state, tokenFile);
+  assert.match(
+    out,
+    /^ok {4}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, within the VM's 16384 MiB$/mu,
+  );
+  assert.match(
+    out,
+    /^ok {4}supervisor container: none named chuggy-chat-[0-9a-f]+; a run starts it$/mu,
+  );
+});
+
+test("doctor of a chat host fails a running supervisor no service of the host answers for, naming its forced removal, and warns of a cap past the VM's memory", async (t) => {
+  const { home, poolFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const { engine, state } = probedEngine("0 0");
+  state.machine.memoryBytes = 2 * 2 ** 30;
+  const name = `chuggy-chat-${poolIdentityDigest(fixtureChatHost)}`;
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: "ghcr.io/shame/chat:1",
+  });
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    new RegExp(
+      `^FAIL {2}supervisor container: ${name} is running, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}$`,
+      "mu",
+    ),
+  );
+  assert.match(
+    err,
+    /^warn {2}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, past the VM's 2048 MiB, so the VM runs out before the cap is reached; lower chat\.sessionsMax or chat\.sessionMemoryMib, or give Colima more memory$/mu,
+  );
+  assert.equal(state.containers.get(name)?.status, "running");
+  state.containers.get(name).status = "exited";
+  const exited = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.match(
+    exited.out,
+    new RegExp(
+      `^ok {4}supervisor container: ${name} is exited, and a run removes it$`,
+      "mu",
+    ),
+  );
+});
+
+/**
+ * A chat host whose supervisor's container runs, its doctor asked, each
+ * inspection of that container written to `order`.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {(t: import("node:test").TestContext, socket: string) => Promise<unknown>} serve what answers at the host's door
+ * @param {string[]} [order]
+ */
+async function runningDoctored(t, serve, order = []) {
+  const { home, poolFile, paths } = await chatFixture(t);
+  await serve(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
+  );
+  const { fetch, requests } = answeringFetch(500, "");
+  const { engine, state } = probedEngine("0 0");
+  state.images.add(namedImage);
+  const name = `chuggy-chat-${poolIdentityDigest(fixtureChatHost)}`;
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: namedImage,
+  });
+  const doctored = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine: {
+      ...engine,
+      exec: (argv, call) => {
+        if (argv[1] === "inspect" && argv.includes(name)) order.push("inspect");
+        return engine.exec(argv, call);
+      },
+    },
+    fetch,
+    tokens: issuedTokens,
+  });
+  assert.equal(state.containers.get(name)?.status, "running");
+  assert.equal(requests.length, 0, "no poll is made beside a service");
+  return { ...doctored, name };
+}
+
+test("doctor of a chat host passes a running supervisor its running service answers for", async (t) => {
+  const { status, out, err, name } = await runningDoctored(t, (t, socket) =>
+    chatServed(t, socket, {
+      named: namedImage,
+      supervisor: "Ready",
+      starting: false,
+    }),
+  );
+  assert.equal(status, 0, err);
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}supervisor container: ${name} is running, the running service's$`,
+      "mu",
+    ),
+  );
+  assert.ok(!`${out}${err}`.includes("rm -f"));
+});
+
+test("doctor of a chat host inspects the supervisor's container before it asks the service, so one running that no service answers for after is no service's", async (t) => {
+  /** @type {string[]} */
+  const order = [];
+  const { status, err } = await runningDoctored(
+    t,
+    (t, socket) =>
+      chatServed(
+        t,
+        socket,
+        { named: namedImage, supervisor: "Ready", starting: false },
+        () => order.push("ask"),
+      ),
+    order,
+  );
+  assert.equal(status, 0, err);
+  assert.deepEqual(order, ["inspect", "ask"]);
+});
+
+test("doctor of a chat host whose service answers what it cannot read takes the running supervisor as that service's, never naming its removal, and polls nothing", async (t) => {
+  const { status, out, err, name } = await runningDoctored(t, controlServed);
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    new RegExp(
+      `^warn {2}supervisor container: ${name} is running, the running service's, which answers what this copy cannot read: .+$`,
+      "mu",
+    ),
+  );
+  assert.match(
+    err,
+    /^FAIL {2}session image: a service of this host answers, but not as this copy reads it, so no poll is made beside it: .+$/mu,
+  );
+  assert.ok(!`${out}${err}`.includes("rm -f"));
+});
+
+test("doctor of a chat host fails a credential root holding no capability cannot read, and one sharing its directory", async (t) => {
+  const { home, poolFile, tokenFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine: probedEngine(undefined).engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    /^FAIL {2}credential owner: root in ghcr\.io\/shame\/chat:1, holding no capability, could not read the credential as the supervisor would; another process in the VM may have read it within the second: .*EACCES/mu,
+  );
+  await writeFile(join(dirname(tokenFile), "notes"), "x");
+  const shared = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine: probedEngine("0 0").engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(shared.status, 1);
+  assert.match(
+    shared.err,
+    /^FAIL {2}credential layout: .*directory of its own$/mu,
+  );
+});
+
+test("doctor of a chat host fails a host's own image it may never pull and that is not here, and runs nothing in it", async (t) => {
+  const { home, poolFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "mine:1", pull: "never" } } },
+  });
+  const { engine, state } = probedEngine("0 0");
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    /^FAIL {2}image pulled: mine:1 is not here, and chat\.image pulls it never$/mu,
+  );
+  assert.ok(!state.calls.some((call) => call.argv[0] === "run"));
+});
+
+/** A session image in the chat host's registry, as the plane names one. */
+const namedImage = `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`;
+
+test("doctor of a chat host polls for the image chuggy names where no service runs, naming the host's idle bound, and pulls it under the pool's token", async (t) => {
+  const { home, poolFile } = await chatFixture(t);
+  const { fetch, requests } = answeringFetch(200, {
+    assignments: [],
+    sessions: [],
+    stop: [],
+    chatImage: namedImage,
+  });
+  const { engine, state } = probedEngine("0 0");
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    fetch,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 0, err);
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}session image: ${namedImage}, as https://chuggy.example/pool names it$`,
+      "mu",
+    ),
+  );
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}image pulled: ${namedImage} was pulled under the pool's token$`,
+      "mu",
+    ),
+  );
+  assert.equal(requests.length, 1);
+  assert.equal(
+    new globalThis.URL(requests[0].url).searchParams.get("idleSecs"),
+    "600",
+  );
+  const pull = state.calls.find((call) => call.argv[0] === "pull");
+  assert.match(pull?.authFile ?? "", /registry\.chuggy\.example/u);
+});
+
+test("doctor of a chat host takes the image chuggy named from the running service, and polls nothing", async (t) => {
+  const { home, poolFile, paths } = await chatFixture(t);
+  await chatServed(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
+    { named: namedImage, supervisor: "Ready", starting: false },
+  );
+  const { fetch, requests } = answeringFetch(500, "");
+  const { engine, state } = probedEngine("0 0");
+  state.images.add(namedImage);
+  const { status, out, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    fetch,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 0, err);
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}session image: ${namedImage}, as chuggy named it to the running service$`,
+      "mu",
+    ),
+  );
+  assert.match(out, /^ok {4}image pulled: .* is here$/mu);
+  assert.equal(requests.length, 0);
 });

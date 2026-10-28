@@ -14,7 +14,12 @@ import {
   launchAgentPlist,
 } from "./launchAgent.mjs";
 import { runnerUpdates, vmPlatform } from "./runner.mjs";
-import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import {
+  fixtureChatHost,
+  fixturePool,
+  ownerOnly,
+  runnerFixture,
+} from "./runner.fixture.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
 
@@ -100,6 +105,20 @@ async function doctored(
   });
   return findings.map(findingLine);
 }
+
+test("doctor of a pool fails a chat host's file as its pool file, never reading it as a pool's", async (t) => {
+  let file = "";
+  const lines = await doctored(t, {}, {}, async ({ poolFile }) => {
+    file = poolFile;
+    await writeFile(poolFile, JSON.stringify(fixtureChatHost));
+    return {};
+  });
+  assert.ok(
+    lines.includes(`FAIL  pool file: ${file} is a chat host's, not a pool's`),
+    lines.join("\n"),
+  );
+  assert.ok(!lines.some((line) => line.startsWith("ok    pool file")));
+});
 
 test("a Mac with everything a run needs passes every check, warning only that no agent serves the pool", async (t) => {
   const lines = await doctored(t);
