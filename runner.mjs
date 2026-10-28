@@ -9,14 +9,21 @@
  * architecture it was started with, and docker says which. A pool registered
  * with `--host` declares the Mac's platform too, and its pool file says so, and
  * a job that pins no image and names it runs on the Mac itself, sized against
- * the Mac.
+ * the Mac. Each poll advertises what the runner finds of the VM and its file
+ * when the run starts, and names this copy, so that the plane can name the
+ * release chuggy pins, which a run installs and ends to be restarted on.
+ *
+ * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
+ * the runner's file names `claudeTokenFile`. The core withholds what would
+ * choose another credential only from a workload told one, so a run that told
+ * none would let a variable its jobs inherit outrank the token.
  */
 
 import { Buffer } from "node:buffer";
 import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { availableParallelism, totalmem } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
@@ -42,12 +49,25 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   poolRunnerClient,
+  poolRunnerLoop,
   poolRunnerTokens,
 } from "@chuggy/worker-core/poolRunner.mjs";
+import { registerAdvertised } from "@chuggy/worker-core/register.mjs";
+import { runnerUpdater } from "@chuggy/worker-core/runnerUpdate.mjs";
 import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 
+import { colimaCli, colimaProfile, colimaRosetta } from "./colimaVm.mjs";
+import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
+import { updatedExitStatus } from "./launchAgent.mjs";
+import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
-import { claudeTokenFileRefusal, runnerConfig } from "./runnerConfig.mjs";
+import {
+  credentialFileRefusal,
+  runnerConfig,
+  runnerCredentialDescribed,
+  runnerCredentialsHanded,
+  runnerPoolLimits,
+} from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
@@ -58,8 +78,17 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerIdentity} RunnerIdentity
+ * @typedef {import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts} RunnerUpdatePorts
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} WorkerPoolUpdates
+ *
+ * @typedef {object} RunnerCopy the copy of this runner that is running
+ * @property {string} package its package's name, as its `package.json` names it
+ * @property {string} version as its `package.json` names it
+ * @property {string} cli its entry, as an absolute path, at the root of the directory it is installed in
  *
  * @typedef {object} RunnerSetup
+ * @property {string} poolFile
  * @property {PoolCredentials} credentials
  * @property {RunnerConfig} config
  * @property {RunnerPaths} paths
@@ -68,9 +97,14 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} runtime the pool's runtime directory
  * @property {string} socket where the pool's service listens
  * @property {Engine} engine
+ * @property {import("./colimaVm.mjs").ColimaCli} colima what reaches docker's VM, which its free disk is measured in
  * @property {ContainerBackend} backend
  * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
  */
+
+/** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
+export const runnerReleasePrefix =
+  "https://github.com/kasofsk/chuggy-darwin/releases/download/";
 
 /** The wait before a pull the registry refused is made again under a fresh token. */
 const pullRetryMs = 5_000;
@@ -89,6 +123,7 @@ export const socketPathBytesMax = 103;
 export async function runnerSetup(poolFile, home) {
   const paths = runnerPaths(home);
   return {
+    poolFile,
     credentials: await poolCredentials(poolFile),
     config: await runnerConfig(paths.config),
     paths,
@@ -121,6 +156,84 @@ export function poolSocket(runtime) {
   return socket;
 }
 
+/**
+ * The lock a service takes to start a job into docker's memory: one for every
+ * pool's agent of this user, since every one runs in the one VM.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerMemoryLock(paths) {
+  return join(paths.runtime, "memory", "docker.lock");
+}
+
+/**
+ * The lock a service takes to ask a plane that claims by room for jobs, so
+ * no two are given the same room: one for every pool's agent of this user,
+ * beside the memory lock.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerClaimLock(paths) {
+  return join(paths.runtime, "memory", "docker.claim");
+}
+
+/**
+ * The lock a service takes to install a release of the runner: one for every
+ * pool's agent of this user, which all run the one install.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerUpdateLock(paths) {
+  return join(paths.runtime, "update.lock");
+}
+
+/**
+ * What a run is told of its runner's update of itself: on unless the
+ * runner's file turns it off, and taken from this package's own release
+ * downloads into the directory this copy is installed in.
+ *
+ * @param {Pick<RunnerSetup, "config" | "paths">} setup
+ * @param {RunnerCopy} copy
+ * @param {Partial<RunnerUpdatePorts>} [ports] where a suite stands in for the network, npm or the machine
+ * @returns {WorkerPoolUpdates}
+ */
+export function runnerUpdates(setup, copy, ports) {
+  return {
+    on: setup.config.autoUpdate,
+    updater: runnerUpdater(
+      {
+        runner: { package: copy.package, version: copy.version },
+        releasePrefix: runnerReleasePrefix,
+        installed: dirname(copy.cli),
+        lockPath: runnerUpdateLock(setup.paths),
+      },
+      ports,
+    ),
+  };
+}
+
+/**
+ * The pool loop until the plane denies the pool, which is done, or until the
+ * runner has installed a release of itself, which its agent restarts it on
+ * and a run started by hand is started again on.
+ *
+ * @param {WorkerPoolClient} client
+ * @param {{sleep: (ms: number) => Promise<void>, log: (line: string) => void, updates: WorkerPoolUpdates, underAgent: boolean}} seams `underAgent` where launchd started the run as the pool's agent
+ * @returns {Promise<number>} the exit status
+ */
+export async function runnerLoop(client, seams) {
+  const { underAgent, ...loop } = seams;
+  const pass = await poolRunnerLoop(client, loop);
+  if (pass.passed === "Denied") return 0;
+  const release = `${seams.updates.updater.runner.package} ${pass.version}`;
+  seams.log(
+    underAgent
+      ? `ending, for launchd to restart this run on ${release}`
+      : `ending: start this run again to run ${release}`,
+  );
+  return updatedExitStatus;
+}
+
 export function runnerEngine() {
   return containerEngine("docker", engineCallTimeoutMs);
 }
@@ -129,13 +242,14 @@ export function runnerEngine() {
 const dockerMachineArgv = [
   "info",
   "--format",
-  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}},"architecture":{{json .Architecture}}}',
+  '{"cpus":{{json .NCPU}},"memoryBytes":{{json .MemTotal}},"architecture":{{json .Architecture}},"name":{{json .Name}}}',
 ];
 
 const dockerMachineSchema = z.object({
   cpus: z.number().int().positive().safe(),
   memoryBytes: z.number().int().positive().safe(),
   architecture: z.string(),
+  name: z.string(),
 });
 
 /**
@@ -173,6 +287,41 @@ const hostPlatforms = /** @type {Record<string, string>} */ ({
   x64: "Platform:MacOS:Amd64",
 });
 
+/** The platform an arm64 VM runs amd64 programs as, through Rosetta. */
+export const rosettaPlatform = vmPlatforms.x64;
+
+/**
+ * The platforms docker's VM runs, its own architecture's first, and on an
+ * arm64 VM Amd64's beside it where Colima runs amd64 programs there through
+ * Rosetta, with what was found of Rosetta on an arm64 VM. QEMU, which runs
+ * them where Rosetta does not, is too slow to take amd64 work through. A VM
+ * no pool runs on is refused.
+ *
+ * @param {{arch: string, name: string}} machine docker's VM, as `dockerMachine` finds it
+ * @param {import("./colimaVm.mjs").ColimaCli} colima
+ * @returns {Promise<{platforms: string[], rosetta?: {rosetta: boolean} | {unknown: string}}>}
+ */
+export async function vmPlatformsFound(machine, colima) {
+  const platform = vmPlatform(machine.arch);
+  if (platform === undefined)
+    throw new Error(`docker's VM is ${machine.arch}, which no pool runs`);
+  if (machine.arch !== "arm64") return { platforms: [platform] };
+  const profile = colimaProfile(machine.name);
+  const rosetta =
+    profile === undefined
+      ? {
+          unknown: `docker names its machine ${machine.name}, which is no Colima VM`,
+        }
+      : await colimaRosetta(colima, profile);
+  return {
+    platforms:
+      "rosetta" in rosetta && rosetta.rosetta
+        ? [platform, rosettaPlatform]
+        : [platform],
+    rosetta,
+  };
+}
+
 /**
  * The platform a Mac of this architecture is, or nothing for one no pool runs
  * work on the host of.
@@ -184,11 +333,40 @@ export function hostPlatform(arch) {
 }
 
 /**
+ * The capabilities each poll of a pool's run advertises, found when it
+ * starts: the platforms docker's VM runs, the Mac's beside them where the
+ * pool was registered with `--host`, the agents the runner's file can run,
+ * and what the file's `capabilities` declares or, where it is absent, the
+ * rest of what the pool was registered with. A set past the contract's bound
+ * is refused.
+ *
+ * @param {Pick<RunnerSetup, "credentials" | "config" | "paths">} setup
+ * @param {readonly string[]} vm the platforms docker's VM runs, as `vmPlatformsFound` finds them
+ * @returns {string[]}
+ */
+export function runnerCapabilities(setup, vm) {
+  const { credentials, config, paths } = setup;
+  const advertised = registerAdvertised({
+    platforms: [...vm, ...hostPlatformsDeclared(credentials, "MacOS")],
+    files: runnerCredentialsHanded(config),
+    images: config.images,
+    host: credentials.host === true,
+    declared: config.capabilities,
+    recorded: credentials.capabilities,
+  });
+  if ("refused" in advertised)
+    throw new Error(
+      `runner configuration ${paths.config}: capabilities: ${advertised.refused}`,
+    );
+  return advertised.capabilities;
+}
+
+/**
  * The machine docker runs containers on: its size, as a job is sized against
- * it, and its architecture, as `process.arch` names one.
+ * it, its architecture, as `process.arch` names one, and its name.
  *
  * @param {Engine} engine
- * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string}>}
+ * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string, name: string}>}
  */
 export async function dockerMachine(engine) {
   const info = await engine.exec(dockerMachineArgv);
@@ -210,13 +388,15 @@ export async function dockerMachine(engine) {
     arch: Object.hasOwn(dockerArchitectures, parsed.architecture)
       ? dockerArchitectures[parsed.architecture]
       : parsed.architecture,
+    name: parsed.name,
   };
 }
 
 /**
- * The endpoint a pull is told, which a pull made under a configuration
- * directory of its own would otherwise lose. Only a unix socket is taken,
- * since a remote context's certificates would not reach the pull.
+ * The endpoint a pull of the pool's registry is told, which that pull, made
+ * under a configuration directory of its own, would otherwise lose. Only a
+ * unix socket is taken, since a remote context's certificates would not reach
+ * it.
  *
  * @param {Engine} engine
  * @returns {Promise<string>}
@@ -237,7 +417,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, engine?: Engine, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion}} host this process's uid and home, where its log lines go, the engine and token source when not docker and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, and the power assertion when not caffeinate
+ * @param {{uid: number, home: string, log: (line: string) => void, runner?: RunnerIdentity, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the copy each poll names, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -245,16 +425,24 @@ export async function runnerParts(setup, host) {
   const runtime = poolRuntimeDirectory(paths, credentials);
   const socket = poolSocket(runtime);
   const engine = host.engine ?? runnerEngine();
+  const colima = host.colima ?? colimaCli();
   const dockerHost = await dockerEndpoint(engine);
-  const { size } = await dockerMachine(engine);
+  const machine = await dockerMachine(engine);
+  const capabilities =
+    host.polls === false
+      ? undefined
+      : runnerCapabilities(
+          setup,
+          (await vmPlatformsFound(machine, colima)).platforms,
+        );
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
-  const tokenFileRefusal = (/** @type {string} */ file) =>
-    claudeTokenFileRefusal(file, { uid: host.uid, home: host.home });
+  const handed = runnerCredentialsHanded(config);
+  const tokenFileRefusal = credentialFileRefused(handed, host);
   const container = containerBackend(
     {
       engine: "docker",
       pool: credentials,
-      tokenFile: config.claudeTokenFile,
+      ...handed,
       registryHost: credentials.registryHost,
       dockerHost,
       timeoutSecsMax: config.timeoutSecsMax,
@@ -263,9 +451,16 @@ export async function runnerParts(setup, host) {
       network: config.network,
       runtimeDir: runtime,
       logDir: paths.logs,
-      machine: size,
+      machine: machine.size,
       pullRetryMs,
       images: config.images,
+      imageRecord: join(paths.images, "docker.json"),
+      imageUnusedSecsMax: config.imageUnusedSecsMax,
+      memoryFreeBytesMin: memoryFreeBytes(config),
+      memoryReservedBytes: memoryReservedBytes(config),
+      memoryLock: runnerMemoryLock(paths),
+      memoryClaimLock: runnerClaimLock(paths),
+      diskFreeBytesMin: diskFloorBytes(config),
     },
     {
       engine,
@@ -274,22 +469,39 @@ export async function runnerParts(setup, host) {
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
       tokenFileRefusal,
+      diskFree: () => vmDiskFree(engine, colima),
     },
   );
-  const backend = runnerHostRouted(
-    setup,
-    container,
-    host.log,
+  const backend = runnerHostRouted(setup, container, handed, {
+    log: host.log,
     tokenFileRefusal,
-  );
+    ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
+  });
   const power = host.power ?? powerAssertion({ log: host.log });
   const client = poolRunnerClient(
     credentials,
     poweredBackend(backend, power),
-    { concurrencyMax: config.concurrencyMax, sessionsMax: config.sessionsMax },
-    { tokens, fetch: host.fetch },
+    runnerPoolLimits(config, setup.poolFile),
+    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
   );
-  return { runtime, socket, engine, backend, client };
+  return { runtime, socket, engine, colima, backend, client };
+}
+
+/**
+ * Why a job cannot be handed the credential file of the agent it requires, as
+ * both backends ask it.
+ *
+ * @param {ReturnType<typeof runnerCredentialsHanded>} handed
+ * @param {{uid: number, home: string}} runner this process's uid and the home the VM shares
+ * @returns {(file: string, agent: string) => Promise<string | undefined>}
+ */
+function credentialFileRefused(handed, runner) {
+  return (file, agent) =>
+    credentialFileRefusal(
+      runnerCredentialDescribed(handed.claudeCredential, agent),
+      file,
+      { uid: runner.uid, home: runner.home },
+    );
 }
 
 /**
@@ -299,11 +511,11 @@ export async function runnerParts(setup, host) {
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
- * @param {(line: string) => void} log
- * @param {(file: string) => Promise<string | undefined>} tokenFileRefusal
+ * @param {ReturnType<typeof runnerCredentialsHanded>} handed
+ * @param {import("@chuggy/worker-core/hostBackend.mjs").HostBackendSeams} seams
  * @returns {ContainerBackend}
  */
-function runnerHostRouted(setup, container, log, tokenFileRefusal) {
+function runnerHostRouted(setup, container, handed, seams) {
   const { credentials, config, paths } = setup;
   const platforms = hostPlatformsDeclared(credentials, "MacOS");
   if (platforms.length === 0) return container;
@@ -314,7 +526,7 @@ function runnerHostRouted(setup, container, log, tokenFileRefusal) {
         platforms,
         directory: join(paths.jobs, poolIdentityDigest(credentials)),
         logDir: paths.logs,
-        tokenFile: config.claudeTokenFile,
+        ...handed,
         timeoutSecsMax: config.timeoutSecsMax,
         outputBytesMax: config.outputBytesMax,
         environment: config.environment,
@@ -323,7 +535,7 @@ function runnerHostRouted(setup, container, log, tokenFileRefusal) {
           memoryMib: Math.floor(totalmem() / (1024 * 1024)),
         },
       },
-      { log, tokenFileRefusal },
+      seams,
     ),
     platforms,
   );

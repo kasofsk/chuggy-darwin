@@ -4,7 +4,8 @@
  * suite decides how long one takes and how it ends.
  */
 
-import { readFileSync, writeSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname } from "node:path";
 
@@ -18,6 +19,8 @@ import { dirname } from "node:path";
  * @property {string} status
  * @property {string} image
  * @property {string[]} [env] each `NAME=value`, as an inspection lists them
+ * @property {number} [memoryBytes] the cap `--memory` ran it with, none where 0
+ * @property {number} [usedBytes] what `stats` says it uses
  * @property {number} [exitCode]
  *
  * @typedef {object} FakeCall
@@ -86,6 +89,12 @@ function fakeEngineState() {
     containers: new Map(),
     images: new Set(),
     networks: new Set(),
+    /**
+     * The named volumes there, each by its labels.
+     *
+     * @type {Map<string, Record<string, string>>}
+     */
+    volumes: new Map(),
     /** @type {FakeCall[]} */
     calls: [],
     unreachable: false,
@@ -96,6 +105,18 @@ function fakeEngineState() {
     runInterrupted: false,
     /** The VM docker runs containers in, as `info` reports it: Colima's default. */
     machine: { cpus: 2, memoryBytes: 2 * 1024 ** 3, architecture: "aarch64" },
+    /**
+     * What all of `info` says of the VM beside its size and architecture:
+     * the name docker gives it and where docker stores what it holds, as
+     * docker in Colima's default VM says them.
+     *
+     * @type {Record<string, unknown>}
+     */
+    info: {
+      Name: "colima",
+      DockerRootDir: "/var/lib/docker",
+      DriverStatus: [["driver-type", "io.containerd.snapshotter.v1"]],
+    },
     /**
      * The endpoint docker's current context names, or none when its context
      * cannot be read.
@@ -137,6 +158,7 @@ function found(state, reference) {
 function run(state, call) {
   const { argv } = call;
   const [name] = flagValues(argv, "--name");
+  const [memory] = flagValues(argv, "--memory");
   call.envFile = readFileSync(flagValues(argv, "--env-file")[0], "utf8");
   const existing = state.containers.get(name);
   if (existing !== undefined)
@@ -164,6 +186,8 @@ function run(state, call) {
     image,
     env,
     exitCode: 0,
+    memoryBytes:
+      memory === undefined ? 0 : Number(memory.replace(/m$/u, "")) * 2 ** 20,
   });
   if (state.runInterrupted)
     return { code: -1, stdout: "", stderr: "", failed: "Interrupted" };
@@ -185,6 +209,7 @@ function inspected(state, references) {
             Id: container.id,
             Name: `/${container.name}`,
             Config: { Labels: container.labels, Env: container.env ?? null },
+            HostConfig: { Memory: container.memoryBytes ?? 0 },
             State: { Status: container.status, ExitCode: container.exitCode },
           },
         ],
@@ -259,6 +284,103 @@ function networked(state, network, verb) {
 }
 
 /**
+ * The label filters of a listing, each as key and value, the value none
+ * where it asks only that the label is there.
+ *
+ * @param {string[]} argv
+ * @returns {[string, string | undefined][]}
+ */
+function labelFilters(argv) {
+  return flagValues(argv, "--filter").map((filter) => {
+    const [key, ...value] = filter.replace(/^label=/u, "").split("=");
+    return [key ?? "", value.length === 0 ? undefined : value.join("=")];
+  });
+}
+
+/**
+ * @param {Record<string, string>} labels
+ * @param {[string, string | undefined][]} wanted
+ */
+function labelsMatched(labels, wanted) {
+  return wanted.every(([key, value]) =>
+    value === undefined ? Object.hasOwn(labels, key) : labels[key] === value,
+  );
+}
+
+/**
+ * A `volume` call: an inspection, a listing, a creation or a removal.
+ *
+ * @param {FakeEngineState} state
+ * @param {string[]} argv
+ */
+function volumed(state, argv) {
+  const last = argv.at(-1) ?? "";
+  if (argv[1] === "inspect") {
+    const names = argv.slice(2);
+    const absent = names.find((name) => !state.volumes.has(name));
+    return absent === undefined
+      ? answered(
+          `${JSON.stringify(names.map((name) => ({ Driver: "local", Labels: state.volumes.get(name), Name: name })))}\n`,
+        )
+      : failed(`Error response from daemon: get ${absent}: no such volume`);
+  }
+  if (argv[1] === "ls") {
+    const wanted = labelFilters(argv);
+    return answered(
+      [...state.volumes.entries()]
+        .filter(([, labels]) => labelsMatched(labels, wanted))
+        .map(([name]) => `${name}\n`)
+        .join(""),
+    );
+  }
+  if (argv[1] === "create") {
+    state.volumes.set(
+      last,
+      Object.fromEntries(
+        flagValues(argv, "--label").map((label) => {
+          const equals = label.indexOf("=");
+          return [label.slice(0, equals), label.slice(equals + 1)];
+        }),
+      ),
+    );
+    return answered(`${last}\n`);
+  }
+  if (argv[1] === "rm" && state.volumes.delete(last))
+    return answered(`${last}\n`);
+  return failed(`Error response from daemon: get ${last}: no such volume`);
+}
+
+/**
+ * What `stats` prints of each running container: its name, and its use and
+ * limit in docker's binary units.
+ *
+ * @param {FakeEngineState} state
+ */
+function statsPrinted(state) {
+  return [...state.containers.values()]
+    .filter((container) => container.status === "running")
+    .map(
+      (container) =>
+        `${container.name} ${String((container.usedBytes ?? 0) / 2 ** 20)}MiB / 16GiB\n`,
+    )
+    .join("");
+}
+
+/**
+ * All `info` says of the VM.
+ *
+ * @param {FakeEngineState} state
+ */
+function infoPrinted(state) {
+  return `${JSON.stringify({
+    ...state.info,
+    MemTotal: state.machine.memoryBytes,
+    NCPU: state.machine.cpus,
+    Architecture: state.machine.architecture,
+  })}\n`;
+}
+
+/**
  * @param {FakeEngineState} state
  * @param {FakeCall} call
  * @returns {EngineAnswer | Promise<EngineAnswer>}
@@ -272,21 +394,25 @@ function answer(state, call) {
       ? answered("sha256:1\n")
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
-  if (verb === "info") return answered(`${JSON.stringify(state.machine)}\n`);
+  if (verb === "info" && call.argv[2] === "{{json .}}")
+    return answered(infoPrinted(state));
+  if (verb === "info")
+    return answered(
+      `${JSON.stringify({ ...state.machine, name: state.info.Name })}\n`,
+    );
   if (verb === "context")
     return state.contextHost === undefined
       ? failed('context "default": context not found')
       : answered(`${state.contextHost}\n`);
   if (verb === "run") return run(state, call);
   if (verb === "ps") {
-    const wanted = flagValues(call.argv, "--filter").map((filter) => {
-      const [key, ...value] = filter.replace(/^label=/u, "").split("=");
-      return [key, value.join("=")];
-    });
+    const wanted = labelFilters(call.argv);
     return answered(
       [...state.containers.values()]
-        .filter((container) =>
-          wanted.every(([key, value]) => container.labels[key] === value),
+        .filter(
+          (container) =>
+            (call.argv.includes("--all") || container.status === "running") &&
+            labelsMatched(container.labels, wanted),
         )
         .map((container) => `${container.id}\n`)
         .join(""),
@@ -299,6 +425,8 @@ function answer(state, call) {
       state.containers.delete(container.name);
     });
   if (verb === "network") return networked(state, last, second);
+  if (verb === "volume") return volumed(state, call.argv);
+  if (verb === "stats") return answered(statsPrinted(state));
   return failed(`unknown command: ${call.argv.join(" ")}`);
 }
 
@@ -313,17 +441,20 @@ export function fakeEngine() {
         environment: { ...engineCall.environment },
       };
       state.calls.push(call);
-      engineCall.signal?.throwIfAborted();
-      return Promise.race([answer(state, call), aborted(engineCall.signal)]);
+      const signal = engineCall.signal ?? engineCall.cut;
+      signal?.throwIfAborted();
+      return Promise.race([answer(state, call), aborted(signal)]);
     },
-    execToFd: async (argv, fd) => {
+    execTail: async (argv) => {
       state.calls.push({ argv: [...argv], environment: {} });
       const reference = argv.at(-1) ?? "";
       const container = found(state, reference);
-      if (state.unreachable) return failed(unreachable);
-      if (state.logsFail || container === undefined) return missing(reference);
-      writeSync(fd, `the log of ${container.name}\n`);
-      return answered();
+      const none = { tail: Buffer.alloc(0), cut: false, lines: 0 };
+      if (state.unreachable) return { ...failed(unreachable), ...none };
+      if (state.logsFail || container === undefined)
+        return { ...missing(reference), ...none };
+      const tail = Buffer.from(`the log of ${container.name}\n`);
+      return { ...answered(), tail, cut: false, lines: 1 };
     },
   };
   return { engine, state };
@@ -342,4 +473,65 @@ export function deferred() {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+/**
+ * Colima's CLI, answering a command in its default VM as that VM would: `df
+ * -P -k` with `gib` GiB free under every path but those `paths` sets, in 1
+ * KiB blocks, and binfmt_misc's listing and its rosetta entry, enabled
+ * unless `rosetta` says otherwise. It records each path it measures.
+ *
+ * @param {number} gib
+ * @param {{paths?: Record<string, number>, rosetta?: "enabled" | "disabled" | "absent"}} [vm]
+ */
+export function fakeColima(gib, vm = {}) {
+  const { paths = {}, rosetta = "enabled" } = vm;
+  /** @type {string[]} */
+  const measured = [];
+  /** @type {string[][]} */
+  const calls = [];
+  /** @type {import("./colimaVm.mjs").ColimaCli} */
+  const colima = {
+    exec: async (argv) => {
+      calls.push([...argv]);
+      const [ssh, flag, profile, separator, command, ...rest] = argv;
+      if (ssh !== "ssh" || flag !== "--profile" || separator !== "--")
+        return failed(`unknown command: ${argv.join(" ")}`);
+      if (profile !== "default")
+        return failed(
+          `time="2026-10-27T22:38:17-04:00" level=fatal msg="colima [profile=${profile}] not running"`,
+        );
+      const binfmt = "/proc/sys/fs/binfmt_misc";
+      if (command === "ls" && rest.join(" ") === `-1 ${binfmt}`)
+        return answered(
+          [
+            "qemu-x86_64",
+            "register",
+            ...(rosetta === "absent" ? [] : ["rosetta"]),
+            "status",
+          ]
+            .map((name) => `${name}\n`)
+            .join(""),
+        );
+      if (command === "cat" && rest.join(" ") === `${binfmt}/rosetta`)
+        return rosetta === "absent"
+          ? failed(`cat: ${binfmt}/rosetta: No such file or directory`)
+          : answered(
+              `${rosetta}\ninterpreter /mnt/lima-rosetta/rosetta\nflags: OCF\n`,
+            );
+      if (command !== "df" || rest[0] !== "-P" || rest[1] !== "-k")
+        return failed(`unknown command: ${argv.join(" ")}`);
+      const rows = rest.slice(2).map((path) => {
+        measured.push(path);
+        const blocks = Math.floor((paths[path] ?? gib) * 2 ** 20);
+        return `/dev/vdb1 102624184 694312 ${String(blocks)} 1% ${path}`;
+      });
+      return answered(
+        ["Filesystem 1024-blocks Used Available Capacity Mounted on", ...rows]
+          .map((row) => `${row}\n`)
+          .join(""),
+      );
+    },
+  };
+  return { colima, measured, calls };
 }
