@@ -17,17 +17,23 @@
 
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { appendFileSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { chatHost, chatHostVolumes } from "@chuggy/worker-core/chatHost.mjs";
+import { claudeAgent } from "@chuggy/worker-core/claude.mjs";
 import { claudeCredentialDescribed } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   bindMountNameable,
   poolLabel,
+  removeArgv,
 } from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  engineFailure,
+  engineFailureLine,
+} from "@chuggy/worker-core/engineErrors.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import {
   poolIdentityChatHost,
@@ -35,6 +41,7 @@ import {
   poolLabelValue,
 } from "@chuggy/worker-core/poolIdentity.mjs";
 import { poolRunnerTokens } from "@chuggy/worker-core/poolRunner.mjs";
+import { savedLogBytesMax } from "@chuggy/worker-core/savedLog.mjs";
 
 import { powerAssertion } from "./power.mjs";
 import {
@@ -71,22 +78,18 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} name
  * @property {string} pool the pool label's value it carries
  * @property {string} network
+ *
+ * @typedef {object} ChatLog a session's log, as far as it is counted
+ * @property {string} file
+ * @property {number} bytes
+ * @property {boolean} stopped whether it keeps nothing more
  */
-
-/**
- * The slot the session plane names the Claude credential by, which a
- * session asks the supervisor's map for.
- */
-export const chatCredentialSlot = "claude-code";
 
 /** Who the credential's file is as the supervisor sees it, as the VM presents it to root. */
 export const chatCredentialOwner = Object.freeze({ uid: 0, gid: 0 });
 
 /** The most sessions whose log's size is kept count of; one past it is counted afresh from its file. */
 const chatLogsCountedMax = 64;
-
-/** The most a session's log grows to, past which its lines are dropped. */
-const chatLogBytesMax = 10 * 1024 * 1024;
 
 /**
  * Why `poolFile` is not a chat host's, or nothing.
@@ -97,7 +100,7 @@ const chatLogBytesMax = 10 * 1024 * 1024;
 export function chatFileRefusal(credentials, poolFile) {
   return poolIdentityChatHost(credentials)
     ? undefined
-    : `${poolFile} is a pool's or a personal runner's, not a chat host's; run it with chuggy-darwin run`;
+    : `${poolFile} is a pool's or a personal runner's, not a chat host's`;
 }
 
 /**
@@ -129,7 +132,7 @@ const chatPulls = {
 };
 
 /**
- * What the runner's file sets a chat host, as `chat status` and `chat doctor`
+ * What the runner's file sets a chat host, as `status` and `doctor`
  * say it.
  *
  * @param {RunnerConfig} config
@@ -182,7 +185,7 @@ export async function chatCredentialRefusal(config, runner) {
 
 /**
  * What the supervisor's container is given of this Mac: the chat host's
- * volumes, the Claude credential's file under the slot the plane names, its
+ * volumes, the Claude credential's file under Claude's agent's slot, its
  * owner as root sees it, and its kind. No repositories map is named, so a
  * session clones from its repository's own address.
  *
@@ -196,7 +199,7 @@ export function chatSupervisorPlaces(credentials, config) {
     throw new RangeError("a chat host's places are a chat host's alone");
   return {
     volumes: chatHostVolumes(credentials),
-    credentialFiles: { [chatCredentialSlot]: handed.tokenFile },
+    credentialFiles: { [claudeAgent.credential]: handed.tokenFile },
     credentialOwner: chatCredentialOwner,
     claudeCredential: handed.claudeCredential,
   };
@@ -224,17 +227,20 @@ function chatTmpfsOption(tmpfs) {
  * host's pool label, and the network. Its image is pulled before, so the run
  * pulls nothing. Its streams reach only this process, which logs them, so
  * the engine keeps no log of its own, which in a container that runs for as
- * long as the host would grow without bound in the VM.
+ * long as the host would grow without bound in the VM. The environment is
+ * named in the argv and its values handed to docker's own, so no value is
+ * seen in this Mac's process list.
  *
  * @param {ChatSupervisorContainer} container
  * @param {ChatSupervisorRun} run
+ * @returns {{argv: string[], environment: Record<string, string>}}
  */
 export function chatSupervisorRunArgv(container, run) {
   for (const { source } of container.binds)
     if (!bindMountNameable(source))
       throw new RangeError(`${source} cannot be named in a bind mount`);
   const [entrypoint, ...command] = container.command;
-  return [
+  const argv = [
     "run",
     ...(container.interactive ? ["-i"] : []),
     "--rm",
@@ -262,10 +268,7 @@ export function chatSupervisorRunArgv(container, run) {
       "--mount",
       `type=bind,source=${source},target=${target},readonly`,
     ]),
-    ...Object.entries(container.environment).flatMap(([name, value]) => [
-      "--env",
-      `${name}=${value}`,
-    ]),
+    ...Object.keys(container.environment).flatMap((name) => ["--env", name]),
     "--network",
     run.network,
     "--entrypoint",
@@ -273,24 +276,43 @@ export function chatSupervisorRunArgv(container, run) {
     container.image,
     ...command,
   ];
+  return { argv, environment: { ...container.environment } };
 }
 
 /**
- * The supervisor started: any container of its name left by a run before
- * removed, then `docker run` spawned on `argv`. `exited` settles once the
- * CLI's process has ended, before its output is read to its end, which the
- * backend reads on. `kill` kills the container, which killing the CLI alone
- * would leave running, and the CLI.
+ * A container of `name` that has exited removed, which a run whose end the
+ * engine did not see leaves behind and which would refuse every start after.
+ * One still running is not removed, and refuses this start instead.
  *
- * @param {readonly string[]} argv as `chatSupervisorRunArgv` makes it
+ * @param {Engine} engine
+ * @param {string} name
+ */
+export async function chatLeftoverRemoved(engine, name) {
+  const removed = await engine.exec(removeArgv(name));
+  if (removed.code === 0 || engineFailure(removed) === "NoSuchContainer")
+    return;
+  throw new Error(
+    `a container named ${name} is here and could not be removed, as one still running is not: ${engineFailureLine(removed)}`,
+  );
+}
+
+/**
+ * The supervisor started: an exited container of its name removed, then
+ * `docker run` spawned on `run`'s argv, its environment's values in the
+ * CLI's. `exited` settles once the CLI's process has ended, before its output
+ * is read to its end, which the backend reads on. `kill` kills the container,
+ * which killing the CLI alone would leave running, and the CLI.
+ *
+ * @param {{argv: readonly string[], environment: Record<string, string>}} run as `chatSupervisorRunArgv` makes it
  * @param {string} name the container's
  * @param {{engine: Engine, spawn?: typeof spawn}} seams
  * @returns {Promise<ChatSupervisorHandle>}
  */
-export async function chatSupervisorStarted(argv, name, seams) {
-  await seams.engine.exec(["rm", "--force", name]);
-  const child = (seams.spawn ?? spawn)("docker", [...argv], {
+export async function chatSupervisorStarted(run, name, seams) {
+  await chatLeftoverRemoved(seams.engine, name);
+  const child = (seams.spawn ?? spawn)("docker", [...run.argv], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, ...run.environment },
   });
   const exited = new Promise((settled) => {
     child.once("exit", settled);
@@ -311,43 +333,73 @@ export async function chatSupervisorStarted(argv, name, seams) {
 /**
  * Each session's log, a line at a time, appended to a file of its own in the
  * runner's logs, named for a digest of the host and the session: owner-only,
- * and never past `chatLogBytesMax`. A line that would take it past drops that
+ * and never past `savedLogBytesMax`. A line that would take it past drops that
  * line and every one after, until its size is counted afresh from the file.
+ * A log that cannot be written keeps nothing more, which the host's log says
+ * once, since its lines are written while the supervisor's are read and a
+ * throw would end every session.
  *
  * @param {string} directory
  * @param {PoolCredentials} credentials
+ * @param {(line: string) => void} hostLog
  * @returns {(assignment: string) => (line: string) => void}
  */
-export function chatLogs(directory, credentials) {
-  /** @type {Map<string, number>} */
+export function chatLogs(directory, credentials, hostLog) {
+  /** @type {Map<string, ChatLog>} */
   const counted = new Map();
-  return (assignment) => {
+  /** @param {string} assignment */
+  const opened = (assignment) => {
     const file = join(
       directory,
       `chat-${poolIdentityDigest(credentials, assignment)}.log`,
     );
-    return (line) => {
-      let bytes = counted.get(file);
-      if (bytes === undefined) {
-        try {
-          bytes = statSync(file).size;
-        } catch {
-          const opened = `session ${assignment}\n`;
-          appendFileSync(file, opened, { mode: 0o600 });
-          bytes = Buffer.byteLength(opened);
-        }
+    const known = counted.get(file);
+    counted.delete(file);
+    let log = known;
+    if (log === undefined) {
+      let bytes;
+      try {
+        bytes = statSync(file).size;
+      } catch {
+        bytes = 0;
       }
-      counted.delete(file);
-      const text = `${line}\n`;
-      if (bytes + Buffer.byteLength(text) <= chatLogBytesMax) {
-        appendFileSync(file, text, { mode: 0o600 });
-        bytes += Buffer.byteLength(text);
-      } else bytes = chatLogBytesMax;
-      counted.set(file, bytes);
-      if (counted.size > chatLogsCountedMax)
-        counted.delete(counted.keys().next().value ?? file);
-    };
+      log = { file, bytes, stopped: bytes >= savedLogBytesMax };
+      if (bytes === 0) chatLogWritten(log, `session ${assignment}`, hostLog);
+    }
+    counted.set(file, log);
+    if (counted.size > chatLogsCountedMax)
+      counted.delete(counted.keys().next().value ?? file);
+    return log;
   };
+  return (assignment) => (line) => {
+    const log = opened(assignment);
+    if (log.bytes + Buffer.byteLength(line) + 1 > savedLogBytesMax)
+      log.stopped = true;
+    chatLogWritten(log, line, hostLog);
+  };
+}
+
+/**
+ * One line appended to a session's log, which stops at a failure and says so
+ * on the host's.
+ *
+ * @param {ChatLog} log
+ * @param {string} text
+ * @param {(line: string) => void} hostLog
+ */
+function chatLogWritten(log, text, hostLog) {
+  if (log.stopped) return;
+  const line = `${text}\n`;
+  try {
+    mkdirSync(dirname(log.file), { recursive: true, mode: 0o700 });
+    appendFileSync(log.file, line, { mode: 0o600 });
+    log.bytes += Buffer.byteLength(line);
+  } catch (failure) {
+    log.stopped = true;
+    hostLog(
+      `${log.file} could not be written, and keeps nothing more: ${failure instanceof Error ? failure.message : String(failure)}`,
+    );
+  }
 }
 
 /**
@@ -385,7 +437,7 @@ export async function chatHostParts(setup, host) {
           ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
         }),
       log: host.log,
-      logFor: chatLogs(paths.logs, credentials),
+      logFor: chatLogs(paths.logs, credentials, host.log),
       sleep: host.sleep ?? ((ms) => delay(ms)),
       nowMs: host.nowMs ?? Date.now,
       tokens: host.tokens ?? poolRunnerTokens(credentials),

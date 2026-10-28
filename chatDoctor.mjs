@@ -1,5 +1,5 @@
 /**
- * What `chat doctor` checks of a member's chat host, in the order a run
+ * What `doctor` checks of a member's chat host, in the order a run
  * depends on them, each answered as passed or not with what was found.
  *
  * IT PULLS THE SESSION IMAGE where it is not here, as a run would, since
@@ -31,6 +31,7 @@ import {
   chatCredentialOwner,
   chatCredentialRefusal,
   chatFileRefusal,
+  chatLeftoverRemoved,
   chatSettingsLine,
   chatSupervisorName,
   chatSupervisorPlaces,
@@ -204,13 +205,12 @@ export function chatOwnerProbeArgv(read, image) {
  */
 async function chatOwnerProbed(read, image) {
   const { credentials, engine } = read;
-  const argv = chatOwnerProbeArgv(read, image);
-  await engine.exec([
-    "rm",
-    "--force",
+  const { argv, environment } = chatOwnerProbeArgv(read, image);
+  await chatLeftoverRemoved(
+    engine,
     `${chatSupervisorName(credentials)}-doctor`,
-  ]);
-  const probed = await engine.exec(argv);
+  );
+  const probed = await engine.exec(argv, { environment });
   if (probed.code !== 0)
     throw new Error(
       `${image} could not read the credential as the supervisor would: ${engineFailureLine(probed)}`,
@@ -324,7 +324,7 @@ export async function chatDoctorFindings(input) {
   /** @type {DoctorFinding[]} */
   const findings = [];
   const { credentials, config } = await chatFilesChecked(input, findings);
-  findings.push(await agentFinding(input, "Chat"));
+  findings.push(await agentFinding(input));
   if (config !== undefined)
     findings.push(await updatesFinding(input.parts.updates(config)));
   if (credentials !== undefined && config !== undefined)

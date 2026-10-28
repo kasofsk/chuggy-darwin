@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
+import process from "node:process";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
@@ -36,13 +44,13 @@ async function chatRead(t, runner = {}) {
   return { ...fixture, ...setup };
 }
 
-test("the supervisor's argv carries every field of its container, its name, the chat host's label and the network", async (t) => {
+test("the supervisor's argv carries every field of its container, its name, the chat host's label and the network, and its environment's names alone", async (t) => {
   const { credentials, config, tokenFile } = await chatRead(t);
   const container = chatSupervisorContainer(
     "registry.chuggy.example/worker@sha256:1",
     chatSupervisorPlaces(credentials, config),
   );
-  const argv = chatSupervisorRunArgv(container, {
+  const { argv, environment } = chatSupervisorRunArgv(container, {
     name: chatSupervisorName(credentials),
     pool: "vteng/member/chat/host",
     network: "chuggy",
@@ -86,9 +94,9 @@ test("the supervisor's argv carries every field of its container, its name, the 
     "--mount",
     `type=bind,source=${credentialDirectory},target=/var/run/chuggy/credentials/claude-code,readonly`,
     "--env",
-    'CHUG_WORKER_CREDENTIAL_FILES={"claude-code":"/var/run/chuggy/credentials/claude-code/token"}',
+    "CHUG_WORKER_CREDENTIAL_FILES",
     "--env",
-    'CHUG_WORKER_CLAUDE_CREDENTIAL={"kind":"Subscription"}',
+    "CHUG_WORKER_CLAUDE_CREDENTIAL",
     "--network",
     "chuggy",
     "--entrypoint",
@@ -99,6 +107,11 @@ test("the supervisor's argv carries every field of its container, its name, the 
     "/opt/chuggy/bin/node",
     "/opt/chuggy/lib/chuggy/chatSupervisor.mjs",
   ]);
+  assert.deepEqual(environment, {
+    CHUG_WORKER_CREDENTIAL_FILES:
+      '{"claude-code":"/var/run/chuggy/credentials/claude-code/token"}',
+    CHUG_WORKER_CLAUDE_CREDENTIAL: '{"kind":"Subscription"}',
+  });
 });
 
 test("a container the spec runs without input, with counts and repositories, is run so", () => {
@@ -109,13 +122,14 @@ test("a container the spec runs without input, with counts and repositories, is 
     repositories: '{"a":"b"}',
     variables: { CHUG_CHAT_SESSIONS_MAX: "2" },
   });
-  const argv = chatSupervisorRunArgv(
+  const { argv, environment } = chatSupervisorRunArgv(
     { ...container, interactive: false },
     { name: "n", pool: "p", network: "none" },
   );
   assert.ok(!argv.includes("-i"));
-  assert.ok(argv.includes("CHUG_CHAT_SESSIONS_MAX=2"), argv.join(" "));
-  assert.ok(argv.includes('CHUG_WORKER_REPOSITORIES={"a":"b"}'));
+  assert.ok(argv.includes("CHUG_CHAT_SESSIONS_MAX"), argv.join(" "));
+  assert.equal(environment.CHUG_CHAT_SESSIONS_MAX, "2");
+  assert.equal(environment.CHUG_WORKER_REPOSITORIES, '{"a":"b"}');
   assert.ok(!argv.some((arg) => arg.startsWith("type=bind")));
 });
 
@@ -154,7 +168,7 @@ test("a chat host's file and a pool's are each refused where the other is wanted
   assert.equal(chatFileRefusal(fixtureChatHost, "/c.json"), undefined);
   assert.match(
     chatFileRefusal(fixturePool, "/p.json") ?? "",
-    /^\/p\.json is a pool's or a personal runner's, not a chat host's; run it with chuggy-darwin run$/u,
+    /^\/p\.json is a pool's or a personal runner's, not a chat host's$/u,
   );
   const { home, poolFile } = await chatFixture(t);
   const pool = await ownerOnly(
@@ -232,13 +246,20 @@ function fakeChild() {
   return child;
 }
 
-test("the supervisor is started after its name's leftover is removed, its streams the CLI's, and killed by name and as a process", async () => {
+test("the supervisor is started after its name's exited leftover is removed, its streams the CLI's, its environment the CLI's, and killed by name and as a process", async () => {
   const { engine, state } = fakeEngine();
+  state.containers.set("chuggy-chat-1", {
+    id: "c1",
+    name: "chuggy-chat-1",
+    labels: {},
+    status: "exited",
+    image: "i",
+  });
   const child = fakeChild();
   /** @type {{command: string, argv: string[], options: unknown}[]} */
   const spawned = [];
   const handle = await chatSupervisorStarted(
-    ["run", "-i", "x"],
+    { argv: ["run", "-i", "x"], environment: { CHUG_NAMED: "its value" } },
     "chuggy-chat-1",
     {
       engine,
@@ -250,12 +271,16 @@ test("the supervisor is started after its name's leftover is removed, its stream
       ),
     },
   );
-  assert.deepEqual(state.calls[0].argv, ["rm", "--force", "chuggy-chat-1"]);
+  assert.deepEqual(state.calls[0].argv, ["rm", "-v", "chuggy-chat-1"]);
+  assert.ok(!state.containers.has("chuggy-chat-1"));
   assert.deepEqual(spawned, [
     {
       command: "docker",
       argv: ["run", "-i", "x"],
-      options: { stdio: ["pipe", "pipe", "pipe"] },
+      options: {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, CHUG_NAMED: "its value" },
+      },
     },
   ]);
   assert.equal(handle.input, child.stdin);
@@ -274,12 +299,43 @@ test("the supervisor is started after its name's leftover is removed, its stream
   );
 });
 
+test("no supervisor is started beside a running container of its name, which is not removed", async () => {
+  const { engine, state } = fakeEngine();
+  state.containers.set("n", {
+    id: "c1",
+    name: "n",
+    labels: {},
+    status: "running",
+    image: "i",
+  });
+  let spawned = 0;
+  await assert.rejects(
+    chatSupervisorStarted({ argv: ["run"], environment: {} }, "n", {
+      engine,
+      spawn: /** @type {any} */ (
+        () => {
+          spawned += 1;
+          return fakeChild();
+        }
+      ),
+    }),
+    /a container named n is here and could not be removed, as one still running is not: .*container is running/u,
+  );
+  assert.equal(spawned, 0);
+  assert.equal(state.containers.get("n")?.status, "running");
+  assert.ok(state.calls.every(({ argv }) => !argv.includes("--force")));
+});
+
 test("a supervisor docker cannot start has exited", async () => {
   const child = fakeChild();
-  const handle = await chatSupervisorStarted(["run"], "n", {
-    engine: fakeEngine().engine,
-    spawn: /** @type {any} */ (() => child),
-  });
+  const handle = await chatSupervisorStarted(
+    { argv: ["run"], environment: {} },
+    "n",
+    {
+      engine: fakeEngine().engine,
+      spawn: /** @type {any} */ (() => child),
+    },
+  );
   const failure = new Error("spawn docker ENOENT");
   child.emit("error", failure);
   assert.equal(await handle.exited, failure);
@@ -287,7 +343,9 @@ test("a supervisor docker cannot start has exited", async () => {
 
 test("each session's log is its own owner-only file, named for a digest, opened with the session and never past its cap", async (t) => {
   const { home, credentials } = await chatRead(t);
-  const logs = chatLogs(home, credentials);
+  /** @type {string[]} */
+  const said = [];
+  const logs = chatLogs(home, credentials, (line) => said.push(line));
   logs("assignment-1")("first");
   logs("assignment-1")("second");
   logs("assignment-2")("other");
@@ -307,7 +365,33 @@ test("each session's log is its own owner-only file, named for a digest, opened 
     await readFile(file, "utf8"),
     "session assignment-1\nfirst\nsecond\n",
   );
-  const fresh = chatLogs(home, credentials)("assignment-1");
+  const fresh = chatLogs(home, credentials, (line) => said.push(line))(
+    "assignment-1",
+  );
   fresh("small");
   assert.match(await readFile(file, "utf8"), /second\nsmall\n$/u);
+  assert.deepEqual(said, []);
+});
+
+test("a session's log that cannot be written keeps nothing more and says so once on the host's, throwing nothing; one whose directory is gone makes it", async (t) => {
+  const { home, credentials } = await chatRead(t);
+  const locked = join(home, "locked");
+  await mkdir(locked, { mode: 0o500 });
+  /** @type {string[]} */
+  const said = [];
+  const logs = chatLogs(locked, credentials, (line) => said.push(line));
+  logs("assignment-1")("first");
+  logs("assignment-1")("second");
+  logs("assignment-1")("third");
+  assert.equal(said.length, 1, said.join("\n"));
+  assert.match(
+    said[0] ?? "",
+    /^.*\/locked\/chat-[0-9a-f]+\.log could not be written, and keeps nothing more: EACCES/u,
+  );
+  const gone = join(home, "gone");
+  chatLogs(gone, credentials, (line) => said.push(line))("assignment-1")(
+    "made",
+  );
+  assert.equal(said.length, 1);
+  assert.equal((await stat(gone)).mode & 0o777, 0o700);
 });
