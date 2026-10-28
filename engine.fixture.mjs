@@ -159,13 +159,15 @@ function run(state, call) {
   const { argv } = call;
   const [name] = flagValues(argv, "--name");
   const [memory] = flagValues(argv, "--memory");
-  call.envFile = readFileSync(flagValues(argv, "--env-file")[0], "utf8");
+  const [envFile] = flagValues(argv, "--env-file");
+  call.envFile = envFile === undefined ? "" : readFileSync(envFile, "utf8");
   const existing = state.containers.get(name);
   if (existing !== undefined)
     return failed(
       `docker: Error response from daemon: Conflict. The container name "/${name}" is already in use by container "${existing.id}". You have to remove (or rename) that container to be able to reuse that name.`,
       125,
     );
+  if (argv.includes("--rm")) return answered("");
   const labels = Object.fromEntries(
     flagValues(argv, "--label").map((label) => {
       const equals = label.indexOf("=");
@@ -380,6 +382,30 @@ function infoPrinted(state) {
   })}\n`;
 }
 
+/** What docker names an image's architecture, by the name `info` gives the VM's. */
+const imageArchitectures = new Map([
+  ["aarch64", "arm64"],
+  ["x86_64", "amd64"],
+]);
+
+/**
+ * An image's inspection, as docker answers one without `--format`: every image
+ * here is the VM's own platform, named as docker names an image's.
+ *
+ * @param {FakeEngineState} state
+ * @param {string} name
+ */
+function imageInspected(state, name) {
+  const { architecture } = state.machine;
+  return {
+    Id: "sha256:1",
+    Os: "linux",
+    Architecture: imageArchitectures.get(architecture) ?? architecture,
+    RepoTags: name.includes("@") ? [] : [name],
+    RepoDigests: name.includes("@") ? [name] : [],
+  };
+}
+
 /**
  * @param {FakeEngineState} state
  * @param {FakeCall} call
@@ -391,7 +417,11 @@ function answer(state, call) {
   if (state.unreachable) return failed(unreachable);
   if (verb === "image")
     return state.images.has(last)
-      ? answered("sha256:1\n")
+      ? answered(
+          call.argv.some((arg) => arg.startsWith("--format"))
+            ? "sha256:1\n"
+            : `${JSON.stringify([imageInspected(state, last)])}\n`,
+        )
       : failed(`Error response from daemon: No such image: ${last}`);
   if (verb === "pull") return pulled(state, call);
   if (verb === "info" && call.argv[2] === "{{json .}}")
