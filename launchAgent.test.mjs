@@ -7,6 +7,7 @@ import test from "node:test";
 import { registerPoolFileName } from "@chuggy/worker-core/register.mjs";
 
 import {
+  chatAgentBaseCharsMax,
   launchAgentBackground,
   launchAgentBaseCharsMax,
   launchAgentCommands,
@@ -103,6 +104,62 @@ test("an agent restarts its runner after any exit but 0, and its pool file and P
   assert.equal(launchAgentPoolFile("<plist/>"), undefined);
   assert.equal(launchAgentPath(plist), path);
   assert.equal(launchAgentPath("<plist/>"), undefined);
+});
+
+test("a chat host's agent has a label of its own beside any pool's, runs `chat run`, and is restarted as a pool's is", () => {
+  const owner = "28:https://auth.chuggy.example/0f3c9a52-member";
+  const named = registerPoolFileName(
+    { kind: "ChatHost", tenant: "vteng", owner },
+    chatAgentBaseCharsMax,
+  );
+  const poolFile = `/Users/a/.config/chuggy/pools/${named}`;
+  const label = launchAgentLabel(poolFile, "Chat");
+  assert.equal(
+    label,
+    "chuggy-darwin-chat.vteng.28_3ahttps_3a_2f_2fauth_2echuggy_2eexample_2f0f3c9a52-member.chat.host",
+  );
+  assert.notEqual(launchAgentLabel(poolFile), label);
+  const longest = registerPoolFileName(
+    { kind: "ChatHost", tenant: "t".repeat(chatAgentBaseCharsMax), owner },
+    chatAgentBaseCharsMax,
+  );
+  assert.ok(
+    `${launchAgentLabel(`/p/${longest}`, "Chat")}.plist`.length <= 255,
+    longest,
+  );
+  assert.equal(
+    chatAgentBaseCharsMax,
+    launchAgentBaseCharsMax -
+      ("chuggy-darwin-chat.".length - "chuggy-darwin.".length),
+  );
+  const plist = launchAgentPlist({
+    ...agentWritten,
+    label,
+    poolFile,
+    kind: "Chat",
+    background: false,
+  });
+  assert.match(
+    plist,
+    /<string>\/opt\/chuggy-darwin\/cli\.mjs<\/string>\s*<string>chat<\/string>\s*<string>run<\/string>\s*<string>--pool<\/string>/u,
+  );
+  assert.match(
+    plist,
+    /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/u,
+  );
+  assert.equal(launchAgentPoolFile(plist), poolFile);
+  assert.match(
+    launchAgentPlist({ ...agentWritten, background: false }),
+    /<string>\/opt\/chuggy-darwin\/cli\.mjs<\/string>\s*<string>run<\/string>/u,
+  );
+  assert.equal(
+    launchAgentRunning({ XPC_SERVICE_NAME: label }, poolFile, "Chat"),
+    true,
+  );
+  assert.equal(
+    launchAgentRunning({ XPC_SERVICE_NAME: label }, poolFile),
+    false,
+  );
 });
 
 test("an argument the operator is told is quoted for a shell only where it must be", () => {

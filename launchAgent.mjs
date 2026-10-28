@@ -5,7 +5,8 @@
  * runner after any exit but 0: a run exits 0 only when the plane denied the
  * pool, and no restart of it would be answered differently. A run that
  * installed a release of itself exits `updatedExitStatus`, and is restarted
- * on that release.
+ * on that release. A member's chat host has an agent of its own kind, named
+ * `chuggy-darwin-chat.<base>`, which runs `chat run` and is restarted alike.
  *
  * An agent loads into the user's desktop session, launchd's `gui` domain for
  * them, which exists only while they are logged in at the Mac's screen. On a
@@ -22,8 +23,18 @@ import { basename } from "node:path";
  */
 export const updatedExitStatus = 75;
 
-/** What every agent's label of this runner begins with. */
-const launchAgentPrefix = "chuggy-darwin.";
+/**
+ * @typedef {"Pool" | "Chat"} LaunchAgentKind a pool's agent, or a member's chat host's
+ */
+
+/** What the label of each kind of agent of this runner begins with. */
+const launchAgentPrefixes = {
+  Pool: "chuggy-darwin.",
+  Chat: "chuggy-darwin-chat.",
+};
+
+/** The command each kind of agent runs its pool file with. */
+const launchAgentRuns = { Pool: ["run"], Chat: ["chat", "run"] };
 
 /** What a property list's file name ends with. */
 const launchAgentSuffix = ".plist";
@@ -31,9 +42,25 @@ const launchAgentSuffix = ".plist";
 /** The longest file name APFS takes, in bytes, which these names spend one per character. */
 const fileNameBytesMax = 255;
 
+/**
+ * The longest pool file name, less `.json`, whose agent of `kind` can have
+ * its property list named for it.
+ *
+ * @param {LaunchAgentKind} kind
+ */
+function launchAgentBaseCharsMaxOf(kind) {
+  return (
+    fileNameBytesMax -
+    launchAgentPrefixes[kind].length -
+    launchAgentSuffix.length
+  );
+}
+
 /** The longest pool file name, less `.json`, whose agent's property list can be named for it. */
-export const launchAgentBaseCharsMax =
-  fileNameBytesMax - launchAgentPrefix.length - launchAgentSuffix.length;
+export const launchAgentBaseCharsMax = launchAgentBaseCharsMaxOf("Pool");
+
+/** The longest chat host's file name, less `.json`, whose agent's property list can be named for it. */
+export const chatAgentBaseCharsMax = launchAgentBaseCharsMaxOf("Chat");
 
 /** The cap on asking launchd whether the user has a desktop session, which guards a hung launchctl. */
 const launchctlCallMsMax = 30_000;
@@ -45,24 +72,26 @@ const restartIntervalSecs = 10;
 const ownerOnlyUmask = 0o077;
 
 /**
- * The label of the agent serving a pool file, named for the file less its
- * `.json`, refused where the name holds a character a label is not given here
- * or is too long to name the agent's file. Every name register writes is
- * taken: it writes only letters, digits, hyphens, underscores and dots.
+ * The label of the agent of `kind` serving a pool file, named for the file
+ * less its `.json`, refused where the name holds a character a label is not
+ * given here or is too long to name the agent's file. Every name register
+ * writes is taken: it writes only letters, digits, hyphens, underscores and
+ * dots.
  *
  * @param {string} poolFile
+ * @param {LaunchAgentKind} [kind]
  */
-export function launchAgentLabel(poolFile) {
+export function launchAgentLabel(poolFile, kind = "Pool") {
   const base = basename(poolFile, ".json");
   if (!/^[A-Za-z0-9._-]+$/u.test(base))
     throw new RangeError(
       `${poolFile} is not named as an agent can be: letters, digits, dots, underscores and hyphens; rename the pool file`,
     );
-  if (base.length > launchAgentBaseCharsMax)
+  if (base.length > launchAgentBaseCharsMaxOf(kind))
     throw new RangeError(
       `${poolFile} makes an agent's file name longer than a Mac takes; give the pool file a shorter name`,
     );
-  return `${launchAgentPrefix}${base}`;
+  return `${launchAgentPrefixes[kind]}${base}`;
 }
 
 /** @param {string} label */
@@ -71,15 +100,16 @@ export function launchAgentFileName(label) {
 }
 
 /**
- * Whether launchd started this process as the agent serving `poolFile`: it
- * names each job it starts by its label in `XPC_SERVICE_NAME`.
+ * Whether launchd started this process as the agent of `kind` serving
+ * `poolFile`: it names each job it starts by its label in `XPC_SERVICE_NAME`.
  *
  * @param {Readonly<Record<string, string | undefined>>} environment
  * @param {string} poolFile
+ * @param {LaunchAgentKind} [kind]
  */
-export function launchAgentRunning(environment, poolFile) {
+export function launchAgentRunning(environment, poolFile, kind = "Pool") {
   try {
-    return environment.XPC_SERVICE_NAME === launchAgentLabel(poolFile);
+    return environment.XPC_SERVICE_NAME === launchAgentLabel(poolFile, kind);
   } catch {
     return false;
   }
@@ -105,10 +135,16 @@ function xmlUnescaped(text) {
 const plistString = (text) => `<string>${xmlEscaped(text)}</string>`;
 
 /**
- * @param {{label: string, node: string, cli: string, poolFile: string, path: string, log: string, background: boolean}} agent absolute paths but the label, the PATH the runner finds docker on, and whether it is the background session's
+ * @param {{label: string, node: string, cli: string, poolFile: string, path: string, log: string, background: boolean, kind?: LaunchAgentKind}} agent absolute paths but the label, the PATH the runner finds docker on, whether it is the background session's, and its kind, a pool's where it names none
  */
 export function launchAgentPlist(agent) {
-  const argv = [agent.node, agent.cli, "run", "--pool", agent.poolFile];
+  const argv = [
+    agent.node,
+    agent.cli,
+    ...launchAgentRuns[agent.kind ?? "Pool"],
+    "--pool",
+    agent.poolFile,
+  ];
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
