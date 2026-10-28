@@ -7,6 +7,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { chatHostControl } from "@chuggy/worker-core/chatHost.mjs";
 import { controlServer } from "@chuggy/worker-core/control.mjs";
 
 /** @type {import("@chuggy/worker-core/containerBackend.mjs").InFlightPlacement} */
@@ -42,4 +43,22 @@ export async function controlServed(t, socket, inFlight = [inFlightFixture]) {
   const server = await controlServer(socket, backend);
   t.after(() => server.close());
   return { stopped, backend };
+}
+
+/**
+ * A chat host's service answering on a control socket: its door says
+ * `status` of the host.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {string} socket
+ * @param {import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus} status
+ */
+export async function chatServed(t, socket, status) {
+  await mkdir(dirname(socket), { recursive: true, mode: 0o700 });
+  const host =
+    /** @type {import("@chuggy/worker-core/chatHost.mjs").ChatHost} */ (
+      /** @type {unknown} */ ({ status: () => status })
+    );
+  const server = await controlServer(socket, chatHostControl(host));
+  t.after(() => server.close());
 }

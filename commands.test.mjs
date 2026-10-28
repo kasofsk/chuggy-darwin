@@ -20,10 +20,17 @@ import { createHash } from "node:crypto";
 import { workerRunnerHeader } from "@chuggy/worker-contract/workerPool";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
-import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityDigest,
+  poolLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 
 import { cliMain } from "./commands.mjs";
-import { controlServed, inFlightFixture } from "./control.fixture.mjs";
+import {
+  chatServed,
+  controlServed,
+  inFlightFixture,
+} from "./control.fixture.mjs";
 import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
   answeringFetch,
@@ -1472,7 +1479,7 @@ test("a chat host whose credential shares its directory is refused before it ser
     engine,
   });
   assert.equal(status, 1);
-  assert.match(err, /keep it in a directory of its own$/u);
+  assert.match(err, /keep the credential in a directory of its own$/u);
   assert.deepEqual(state.calls, []);
 });
 
@@ -1490,7 +1497,7 @@ test("status of a chat host names the settings, what the service says of its sup
     stopped.out,
     [
       "service: not running",
-      "settings: sessionsMax 3, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor's memory is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
@@ -1499,17 +1506,15 @@ test("status of a chat host names the settings, what the service says of its sup
     "--filter",
     `label=io.chuggy.pool=${poolLabelValue(fixtureChatHost)}`,
   ]);
-  await controlServed(
+  await chatServed(
     t,
     controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
-    [
-      {
-        named: "registry.chuggy.example/worker@sha256:2",
-        used: "registry.chuggy.example/worker@sha256:1",
-        supervisor: "Ready",
-        starting: true,
-      },
-    ],
+    {
+      named: "registry.chuggy.example/worker@sha256:2",
+      used: "registry.chuggy.example/worker@sha256:1",
+      supervisor: "Ready",
+      starting: true,
+    },
   );
   const served = await called(["status", "--pool", poolFile], {
     home,
@@ -1530,24 +1535,63 @@ const issuedTokens = {
 };
 
 /**
- * Docker held in memory, answering the doctor's probe of the credential's
- * owner with the owner given.
+ * Docker held in memory, its VM room for the default supervisor's cap,
+ * answering the doctor's probe of the credential's owner with the owner
+ * given.
  *
  * @param {string} owner `uid gid`, as the probe prints them
  */
 function probedEngine(owner) {
   const { engine, state } = fakeEngine();
+  state.machine.memoryBytes = 16 * 2 ** 30;
   /** @type {import("@chuggy/worker-core/engine.mjs").Engine} */
   const probed = {
     ...engine,
     exec: async (argv, call) => {
       const answer = await engine.exec(argv, call);
       return argv[0] === "run" && argv.includes("-e")
-        ? { ...answer, stdout: `claude-code ${owner}\n` }
+        ? { ...answer, stdout: `${owner}\n` }
         : answer;
     },
   };
   return { engine: probed, state };
+}
+
+/**
+ * The doctor's probe ran as the supervisor would, but for its volumes and
+ * network, its environment's values in docker's own, and nothing removed by
+ * force.
+ *
+ * @param {import("./engine.fixture.mjs").FakeEngineState} state
+ * @param {string} tokenFile
+ */
+function probeAsserted(state, tokenFile) {
+  const probe = state.calls.find(
+    (call) => call.argv[0] === "run" && call.argv.includes("-e"),
+  );
+  assert.ok(probe !== undefined);
+  assert.deepEqual(
+    probe.argv.slice(
+      probe.argv.indexOf("--network"),
+      probe.argv.indexOf("--network") + 2,
+    ),
+    ["--network", "none"],
+  );
+  assert.ok(!probe.argv.some((arg) => arg.startsWith("type=volume")));
+  assert.ok(
+    probe.argv.includes(
+      `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/provider,readonly`,
+    ),
+  );
+  assert.ok(state.calls.every(({ argv }) => !argv.includes("--force")));
+  assert.ok(
+    probe.argv.every((arg) => !/^CHUG_[A-Z_]+=/u.test(arg)),
+    "no variable's value is in the argv",
+  );
+  assert.equal(
+    probe.environment.CHUG_CHAT_CREDENTIAL,
+    "/var/run/chuggy/credentials/provider/token",
+  );
 }
 
 test("doctor of a chat host checks the host's file, the credential's layout, docker, the image, pulled, and the owner the VM presents the credential as", async (t) => {
@@ -1573,6 +1617,8 @@ test("doctor of a chat host checks the host's file, the credential's layout, doc
     "ok    control socket",
     "ok    docker",
     "ok    network",
+    "ok    supervisor container",
+    "ok    memory cap",
     "ok    pool token",
     "ok    session image",
     "ok    image pulled",
@@ -1591,22 +1637,60 @@ test("doctor of a chat host checks the host's file, the credential's layout, doc
     out,
     /credential owner: the VM presents it to the supervisor as root's, uid 0, outside the users 20000 to 20031 a session runs as$/mu,
   );
-  const probe = state.calls.find(
-    (call) => call.argv[0] === "run" && call.argv.includes("-e"),
+  probeAsserted(state, tokenFile);
+  assert.match(
+    out,
+    /^ok {4}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, within the VM's 16384 MiB$/mu,
   );
-  assert.ok(probe !== undefined);
-  assert.ok(!probe.argv.includes("-i"));
-  assert.deepEqual(
-    probe.argv.slice(
-      probe.argv.indexOf("--network"),
-      probe.argv.indexOf("--network") + 2,
+  assert.match(
+    out,
+    /^ok {4}supervisor container: none named chuggy-chat-[0-9a-f]+; a run starts it$/mu,
+  );
+});
+
+test("doctor of a chat host fails a running supervisor no service of the host answers for, naming its forced removal, and warns of a cap past the VM's memory", async (t) => {
+  const { home, poolFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const { engine, state } = probedEngine("0 0");
+  state.machine.memoryBytes = 2 * 2 ** 30;
+  const name = `chuggy-chat-${poolIdentityDigest(fixtureChatHost)}`;
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: "ghcr.io/shame/chat:1",
+  });
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    new RegExp(
+      `^FAIL {2}supervisor container: ${name} is running, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}$`,
+      "mu",
     ),
-    ["--network", "none"],
   );
-  assert.ok(!probe.argv.some((arg) => arg.startsWith("type=volume")));
-  assert.ok(
-    probe.argv.includes(
-      `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/claude-code,readonly`,
+  assert.match(
+    err,
+    /^warn {2}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, past the VM's 2048 MiB, so the VM runs out before the cap is reached; lower chat\.sessionsMax or chat\.sessionMemoryMib, or give Colima more memory$/mu,
+  );
+  assert.equal(state.containers.get(name)?.status, "running");
+  state.containers.get(name).status = "exited";
+  const exited = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    tokens: issuedTokens,
+  });
+  assert.match(
+    exited.out,
+    new RegExp(
+      `^ok {4}supervisor container: ${name} is exited, and a run removes it$`,
+      "mu",
     ),
   );
 });
@@ -1705,10 +1789,10 @@ test("doctor of a chat host polls for the image chuggy names where no service ru
 
 test("doctor of a chat host takes the image chuggy named from the running service, and polls nothing", async (t) => {
   const { home, poolFile, paths } = await chatFixture(t);
-  await controlServed(
+  await chatServed(
     t,
     controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
-    [{ named: namedImage, supervisor: "Ready", starting: false }],
+    { named: namedImage, supervisor: "Ready", starting: false },
   );
   const { fetch, requests } = answeringFetch(500, "");
   const { engine, state } = probedEngine("0 0");

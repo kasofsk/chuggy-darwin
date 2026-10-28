@@ -11,31 +11,41 @@
  * serving sessions has already heard the image chuggy names.
  */
 
-import { chatSupervisorContainer } from "@chuggy/worker-core/chatHost.mjs";
+import {
+  chatHostConfigured,
+  chatHostMemoryBytes,
+  chatHostStatusAsked,
+  chatSupervisorContainer,
+  chatSupervisorName,
+} from "@chuggy/worker-core/chatHost.mjs";
 import {
   chatSessionUidCount,
   chatSessionUidFirst,
 } from "@chuggy/worker-core/chatSession.mjs";
-import { controlAsked } from "@chuggy/worker-core/control.mjs";
-import { imageInspectArgv } from "@chuggy/worker-core/engineArgv.mjs";
-import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
+import { chatSupervisorVariables } from "@chuggy/worker-core/chatSupervisor.mjs";
+import {
+  chatSupervisorRunArgv,
+  imageInspectArgv,
+  inspectArgv,
+  removeArgv,
+} from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  engineFailure,
+  engineFailureLine,
+} from "@chuggy/worker-core/engineErrors.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolLabelValue } from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   imageRegistryHost,
   registryPull,
 } from "@chuggy/worker-core/registryAuth.mjs";
-import { workerCredentialFilesVariable } from "@chuggy/worker-contract/workerEnvironment";
 
 import {
   chatCredentialOwner,
   chatCredentialRefusal,
   chatFileRefusal,
-  chatLeftoverRemoved,
+  chatHostSettings,
   chatSettingsLine,
-  chatSupervisorName,
-  chatSupervisorPlaces,
-  chatSupervisorRunArgv,
 } from "./chatRunner.mjs";
 import {
   agentFinding,
@@ -47,9 +57,11 @@ import {
   updatesFinding,
 } from "./doctor.mjs";
 import { dockerEndpoint, poolRuntimeDirectory, poolSocket } from "./runner.mjs";
-import { runnerChatSettings, runnerConfig } from "./runnerConfig.mjs";
+import { runnerConfig } from "./runnerConfig.mjs";
 
 /**
+ * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostSettings} ChatHostSettings
+ * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus} ChatHostStatus
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
@@ -73,16 +85,21 @@ import { runnerChatSettings, runnerConfig } from "./runnerConfig.mjs";
  * @typedef {object} ChatDoctorRead what the checks before the engine's found
  * @property {PoolCredentials} credentials
  * @property {RunnerConfig} config
+ * @property {ChatHostSettings} settings
  * @property {Engine} engine
  * @property {string} runtime the host's runtime directory
+ * @property {ChatHostStatus | undefined} served what the host's running service says of it, where one answers
  * @property {string | undefined} token the pool's, where one was issued
  */
 
-/** Run in the session image as the supervisor is, it prints each credential's owner as the supervisor would see it. */
-const chatOwnerProbe = `for (const [slot, file] of Object.entries(JSON.parse(process.env.${workerCredentialFilesVariable}))) { const { uid, gid } = require("node:fs").statSync(file); console.log([slot, uid, gid].join(" ")); }`;
+/** Run in the session image as the supervisor is, it prints the credential's owner as the supervisor would see it. */
+const chatOwnerProbe = `const { uid, gid } = require("node:fs").statSync(process.env.${chatSupervisorVariables.credential}); console.log(uid + " " + gid);`;
 
 /** The node every session image runs the supervisor under. */
 const chatProbeNode = "/opt/chuggy/bin/node";
+
+/** The states a container docker removes without force is in. */
+const chatRemovableStates = ["created", "exited", "dead"];
 
 /**
  * The image a run would start the supervisor in: the host's own, or the one
@@ -93,18 +110,16 @@ const chatProbeNode = "/opt/chuggy/bin/node";
  * @returns {Promise<[string, string]>}
  */
 async function chatImageNamed(input, read) {
-  const { credentials, config, runtime, token } = read;
-  const settings = runnerChatSettings(config);
+  const { credentials, settings, served, token } = read;
   if (settings.image !== undefined)
     return [settings.image.image, `${settings.image.image}, chat.image's`];
-  const served = /** @type {{inFlight?: {named?: string}[]} | undefined} */ (
-    await controlAsked(poolSocket(runtime), { op: "status" })
-  );
   if (served !== undefined) {
-    const named = served.inFlight?.[0]?.named;
-    if (named === undefined)
+    if (served.named === undefined)
       throw new Error("the running service has heard no image from chuggy yet");
-    return [named, `${named}, as chuggy named it to the running service`];
+    return [
+      served.named,
+      `${served.named}, as chuggy named it to the running service`,
+    ];
   }
   if (token === undefined) throw new Error("no pool token to poll with");
   const polled = await input.parts
@@ -134,10 +149,10 @@ async function chatImageNamed(input, read) {
  * @returns {Promise<[true, string]>}
  */
 async function chatImagePulled(read, image) {
-  const { credentials, config, engine, runtime, token } = read;
+  const { credentials, settings, engine, runtime, token } = read;
   if ((await engine.exec(imageInspectArgv(image))).code === 0)
     return [true, `${image} is here`];
-  const own = runnerChatSettings(config).image;
+  const own = settings.image;
   if (own?.pull === "never")
     throw new Error(`${image} is not here, and chat.image pulls it never`);
   const host = imageRegistryHost(image);
@@ -166,36 +181,53 @@ async function chatImagePulled(read, image) {
 }
 
 /**
- * The probe's container: the supervisor's, but for its volumes, its network
- * and its command, so it holds the credential as the supervisor does.
+ * The probe's run: the supervisor's container, as the core runs it, but for
+ * its volumes, its network and its command, so it holds the credential as
+ * the supervisor does. Its environment's values are handed to docker's own.
  *
  * @param {ChatDoctorRead} read
  * @param {string} image
  */
-export function chatOwnerProbeArgv(read, image) {
-  const { credentials, config } = read;
+export function chatOwnerProbeRun(read, image) {
+  const { credentials, settings } = read;
   const container = chatSupervisorContainer(
     image,
-    chatSupervisorPlaces(credentials, config),
+    settings.places,
+    chatHostMemoryBytes(settings),
   );
   return chatSupervisorRunArgv(
+    "docker",
     {
       ...container,
-      interactive: false,
       volumes: [],
       command: [chatProbeNode, "-e", chatOwnerProbe],
     },
     {
       name: `${chatSupervisorName(credentials)}-doctor`,
-      pool: poolLabelValue(credentials),
+      label: poolLabelValue(credentials),
       network: "none",
     },
   );
 }
 
 /**
- * Each credential's owner as the VM presents it to the supervisor, passed
- * only where it is `chatCredentialOwner`, root: the supervisor reads a
+ * A container of `name` that has exited removed, as a start removes one; one
+ * still running is not, and refuses what was to run beside it.
+ *
+ * @param {Engine} engine
+ * @param {string} name
+ */
+async function chatLeftoverRemoved(engine, name) {
+  const removed = await engine.exec(removeArgv(name));
+  if (removed.code !== 0 && engineFailure(removed) !== "NoSuchContainer")
+    throw new Error(
+      `the container ${name} is still there: ${engineFailureLine(removed)}`,
+    );
+}
+
+/**
+ * The credential's owner as the VM presents it to the supervisor, passed
+ * only where it is `chatCredentialOwner`, root: the supervisor reads the
  * credential as its owner, and only its owner enters the credentials'
  * directory, so an owner a session runs as would hand that session the file.
  *
@@ -205,7 +237,7 @@ export function chatOwnerProbeArgv(read, image) {
  */
 async function chatOwnerProbed(read, image) {
   const { credentials, engine } = read;
-  const { argv, environment } = chatOwnerProbeArgv(read, image);
+  const { argv, environment } = chatOwnerProbeRun(read, image);
   await chatLeftoverRemoved(
     engine,
     `${chatSupervisorName(credentials)}-doctor`,
@@ -215,20 +247,15 @@ async function chatOwnerProbed(read, image) {
     throw new Error(
       `${image} could not read the credential as the supervisor would: ${engineFailureLine(probed)}`,
     );
-  const lines = probed.stdout.split("\n").filter((line) => line !== "");
-  if (lines.length === 0)
+  const [line] = probed.stdout.split("\n").filter((said) => said !== "");
+  if (line === undefined)
     throw new Error(`${image} said nothing of the credential's owner`);
+  const [uid, gid] = line.split(" ").map(Number);
   const last = chatSessionUidFirst + chatSessionUidCount - 1;
-  for (const line of lines) {
-    const [slot, uid, gid] = line.split(" ");
-    if (
-      Number(uid) !== chatCredentialOwner.uid ||
-      Number(gid) !== chatCredentialOwner.gid
-    )
-      throw new Error(
-        `the VM presents the ${slot} credential to the supervisor as uid ${uid}, gid ${gid}, not as root's${Number(uid) >= chatSessionUidFirst && Number(uid) <= last ? ", and as a user a session runs as" : ""}; another process in the VM may have read it within the second`,
-      );
-  }
+  if (uid !== chatCredentialOwner.uid || gid !== chatCredentialOwner.gid)
+    throw new Error(
+      `the VM presents the credential to the supervisor as uid ${String(uid)}, gid ${String(gid)}, not as root's${Number(uid) >= chatSessionUidFirst && Number(uid) <= last ? ", and as a user a session runs as" : ""}; another process in the VM may have read it within the second`,
+    );
   return [
     true,
     `the VM presents it to the supervisor as root's, uid ${String(chatCredentialOwner.uid)}, outside the users ${String(chatSessionUidFirst)} to ${String(last)} a session runs as`,
@@ -236,8 +263,62 @@ async function chatOwnerProbed(read, image) {
 }
 
 /**
- * The checks that need no engine: the host's file, the runner's, its
- * credential and its layout.
+ * The supervisor's container as docker has it: none, or one a start removes,
+ * or the running service's. One running where no service of the host
+ * answers refuses every start beside it, and is never removed by force.
+ *
+ * @param {ChatDoctorRead} read
+ * @returns {Promise<[true, string]>}
+ */
+async function chatSupervisorFound(read) {
+  const name = chatSupervisorName(read.credentials);
+  const inspected = await read.engine.exec(inspectArgv([name]));
+  if (inspected.code !== 0) {
+    if (engineFailure(inspected) === "NoSuchContainer")
+      return [true, `none named ${name}; a run starts it`];
+    throw new Error(engineFailureLine(inspected));
+  }
+  const [container] = /** @type {{State?: {Status?: string}}[]} */ (
+    JSON.parse(inspected.stdout)
+  );
+  const state = container?.State?.Status ?? "unknown";
+  if (chatRemovableStates.includes(state))
+    return [true, `${name} is ${state}, and a run removes it`];
+  if (read.served !== undefined)
+    return [true, `${name} is ${state}, the running service's`];
+  throw new Error(
+    `${name} is ${state}, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}`,
+  );
+}
+
+/**
+ * The supervisor's memory cap, which docker's VM must hold for the cap to
+ * bound it: one above the VM's memory is warned of.
+ *
+ * @param {ChatHostSettings} settings
+ * @param {number} vmMib the VM's memory as docker says it
+ * @returns {DoctorFinding}
+ */
+function chatMemoryFinding(settings, vmMib) {
+  const capMib = chatHostMemoryBytes(settings) / 2 ** 20;
+  const said = `the supervisor is capped at ${String(capMib)} MiB, sessionsMax ${String(settings.sessionsMax)} at ${String(settings.sessionMemoryBytes / 2 ** 20)} MiB each`;
+  return capMib <= vmMib
+    ? {
+        check: "memory cap",
+        passed: true,
+        detail: `${said}, within the VM's ${String(vmMib)} MiB`,
+      }
+    : {
+        check: "memory cap",
+        passed: true,
+        warning: true,
+        detail: `${said}, past the VM's ${String(vmMib)} MiB, so the VM runs out before the cap is reached; lower chat.sessionsMax or chat.sessionMemoryMib, or give Colima more memory`,
+      };
+}
+
+/**
+ * The checks that need no engine: the host's file, the runner's and the
+ * settings it gives the host, its credential and its layout.
  *
  * @param {ChatDoctorInput} input
  * @param {DoctorFinding[]} findings
@@ -251,12 +332,19 @@ async function chatFilesChecked(input, findings) {
   });
   const config = await checked(findings, "runner configuration", async () => {
     const read = await runnerConfig(input.paths.config);
-    return [read, `${input.paths.config}: ${chatSettingsLine(read)}`];
+    const settings =
+      credentials === undefined
+        ? chatHostConfigured(read.chat, read.outputBytesMax)
+        : chatHostSettings(credentials, read);
+    return [
+      { config: read, settings },
+      `${input.paths.config}: ${chatSettingsLine(settings)}`,
+    ];
   });
   if (config !== undefined) {
-    findings.push(await claudeCredentialFinding(input, config, false));
+    findings.push(await claudeCredentialFinding(input, config.config, false));
     await checked(findings, "credential layout", async () => {
-      const refusal = await chatCredentialRefusal(config, input);
+      const refusal = await chatCredentialRefusal(config.config, input);
       if (refusal !== undefined) throw new Error(refusal);
       return [
         true,
@@ -269,18 +357,19 @@ async function chatFilesChecked(input, findings) {
       true,
       poolSocket(poolRuntimeDirectory(input.paths, credentials)),
     ]);
-  return { credentials, config };
+  return { credentials, read: config };
 }
 
 /**
- * The engine, the network, and the session image named, pulled and run.
+ * The engine, the network, the supervisor's container and its cap, and the
+ * session image named, pulled and run.
  *
  * @param {ChatDoctorInput} input
  * @param {PoolCredentials} credentials
- * @param {RunnerConfig} config
+ * @param {{config: RunnerConfig, settings: ChatHostSettings}} found
  * @param {DoctorFinding[]} findings
  */
-async function chatEngineChecked(input, credentials, config, findings) {
+async function chatEngineChecked(input, credentials, found, findings) {
   const engine = input.parts.engine();
   const machine = await dockerChecked(
     engine,
@@ -289,20 +378,28 @@ async function chatEngineChecked(input, credentials, config, findings) {
     "this host's",
   );
   if (machine === undefined) return;
-  await networkChecked(engine, config.network, findings, "network");
-  const token = await poolTokenChecked(
+  await networkChecked(engine, found.config.network, findings, "network");
+  const runtime = poolRuntimeDirectory(input.paths, credentials);
+  /** @type {ChatDoctorRead} */
+  const read = {
+    credentials,
+    ...found,
+    engine,
+    runtime,
+    served: await chatHostStatusAsked(poolSocket(runtime)).catch(
+      () => undefined,
+    ),
+    token: undefined,
+  };
+  await checked(findings, "supervisor container", () =>
+    chatSupervisorFound(read),
+  );
+  findings.push(chatMemoryFinding(found.settings, machine.size.memoryMib));
+  read.token = await poolTokenChecked(
     input.parts.tokens(credentials),
     credentials,
     findings,
   );
-  /** @type {ChatDoctorRead} */
-  const read = {
-    credentials,
-    config,
-    engine,
-    runtime: poolRuntimeDirectory(input.paths, credentials),
-    token,
-  };
   const image = await checked(findings, "session image", () =>
     chatImageNamed(input, read),
   );
@@ -323,11 +420,20 @@ async function chatEngineChecked(input, credentials, config, findings) {
 export async function chatDoctorFindings(input) {
   /** @type {DoctorFinding[]} */
   const findings = [];
-  const { credentials, config } = await chatFilesChecked(input, findings);
+  const { credentials, read } = await chatFilesChecked(input, findings);
   findings.push(await agentFinding(input));
-  if (config !== undefined)
-    findings.push(await updatesFinding(input.parts.updates(config)));
-  if (credentials !== undefined && config !== undefined)
-    await chatEngineChecked(input, credentials, config, findings);
+  if (read !== undefined)
+    findings.push(await updatesFinding(input.parts.updates(read.config)));
+  if (
+    credentials !== undefined &&
+    read !== undefined &&
+    "places" in read.settings
+  )
+    await chatEngineChecked(
+      input,
+      credentials,
+      { config: read.config, settings: read.settings },
+      findings,
+    );
   return findings;
 }

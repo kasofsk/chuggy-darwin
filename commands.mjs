@@ -15,6 +15,10 @@ import { delimiter, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
+import {
+  chatHostControl,
+  chatHostStatusAsked,
+} from "@chuggy/worker-core/chatHost.mjs";
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
 import { poolLabel } from "@chuggy/worker-core/engineArgv.mjs";
 import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
@@ -44,6 +48,7 @@ import { chatDoctorFindings } from "./chatDoctor.mjs";
 import {
   chatCredentialRefusal,
   chatHostParts,
+  chatHostSettings,
   chatSettingsLine,
   chatSetup,
 } from "./chatRunner.mjs";
@@ -612,12 +617,7 @@ async function chatRun(call) {
     power: call.host.power,
   });
   await runnerDirectories(setup.paths, parts.runtime);
-  const server = await controlServer(parts.socket, {
-    inFlight: () => [parts.host.status()],
-    stop: async () => ({
-      refused: "a chat host's sessions are stopped in chuggy",
-    }),
-  });
+  const server = await controlServer(parts.socket, chatHostControl(parts.host));
   try {
     await runnerLeftoversRemoved(parts.runtime);
     scratchRemovedOnSignal(parts.runtime);
@@ -646,15 +646,13 @@ async function chatStatus(call) {
   const socket = poolSocket(
     poolRuntimeDirectory(setup.paths, setup.credentials),
   );
-  const answered =
-    /** @type {{inFlight: import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus[]} | undefined} */ (
-      await controlAsked(socket, { op: "status" })
-    );
+  const served = await chatHostStatusAsked(socket);
   call.host.out(
-    answered === undefined ? "service: not running" : "service: running",
+    served === undefined ? "service: not running" : "service: running",
   );
-  call.host.out(`settings: ${chatSettingsLine(setup.config)}`);
-  const [served] = answered?.inFlight ?? [];
+  call.host.out(
+    `settings: ${chatSettingsLine(chatHostSettings(setup.credentials, setup.config))}`,
+  );
   if (served !== undefined) {
     call.host.out(
       `supervisor: ${served.supervisor.toLowerCase()}${served.starting ? ", starting another" : ""}, running ${served.used ?? "no image yet"}`,
