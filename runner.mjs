@@ -178,6 +178,18 @@ export function runnerClaimLock(paths) {
 }
 
 /**
+ * The lock a service takes to get and copy chuggy's runtime, so a pull for one
+ * platform does not replace the variant another of this user's agents is
+ * copying from: one for every pool's agent of this user, since every one runs
+ * in the one VM.
+ *
+ * @param {RunnerPaths} paths
+ */
+export function runnerRuntimeLock(paths) {
+  return join(paths.runtime, "runtime", "docker.lock");
+}
+
+/**
  * The lock a service takes to install a release of the runner: one for every
  * pool's agent of this user, which all run the one install.
  *
@@ -460,6 +472,7 @@ export async function runnerParts(setup, host) {
       memoryReservedBytes: memoryReservedBytes(config),
       memoryLock: runnerMemoryLock(paths),
       memoryClaimLock: runnerClaimLock(paths),
+      runtimeLock: runnerRuntimeLock(paths),
       diskFreeBytesMin: diskFloorBytes(config),
     },
     {

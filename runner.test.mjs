@@ -27,6 +27,7 @@ import {
   runnerClaimLock,
   runnerLoop,
   runnerMemoryLock,
+  runnerRuntimeLock,
   runnerParts,
   runnerReleasePrefix,
   runnerSetup,
@@ -541,7 +542,7 @@ test("a run holds the floor its file sets in GiB free where docker stores in Col
   }
 });
 
-test("every pool's agent of a user takes one install lock, and one memory lock and one claim lock, in the runner's runtime directory, since every one runs the one install in the one VM", () => {
+test("every pool's agent of a user takes one install lock, and one memory lock, one claim lock and one runtime lock, in the runner's runtime directory, since every one runs the one install in the one VM", () => {
   const paths = runnerPaths("/Users/shame");
   assert.equal(
     runnerUpdateLock(paths),
@@ -554,6 +555,10 @@ test("every pool's agent of a user takes one install lock, and one memory lock a
   assert.equal(
     runnerClaimLock(paths),
     "/Users/shame/Library/Caches/chuggy-darwin/memory/docker.claim",
+  );
+  assert.equal(
+    runnerRuntimeLock(paths),
+    "/Users/shame/Library/Caches/chuggy-darwin/runtime/docker.lock",
   );
 });
 
@@ -610,6 +615,52 @@ test("a run's ceiling for a job is its budget less the GiB its file reserves, no
     await release();
     assert.equal(existsSync(lock), false);
   }
+});
+
+test("an agent gets and copies chuggy's runtime under the one runtime lock of the VM, and starts the job once it is let go", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t);
+  const lock = runnerRuntimeLock(paths);
+  const runtime =
+    "registry.chuggy.example/worker-runtime@sha256:" + "b".repeat(64);
+  const { engine, state } = vmUsing(0);
+  /** @type {boolean[]} */
+  const lockedAtRuntime = [];
+  /** @type {boolean[]} */
+  const lockedAtStart = [];
+  const watched = {
+    ...engine,
+    /** @type {typeof engine.exec} */
+    exec: (argv, options) => {
+      if (argv.includes(runtime)) lockedAtRuntime.push(existsSync(lock));
+      if (argv[0] === "run" && argv[1] === "-d")
+        lockedAtStart.push(existsSync(lock));
+      return engine.exec(argv, options);
+    },
+  };
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine: watched,
+    power: unpowered,
+  });
+  await runner.client.backend.held();
+  await runner.backend.place({ ...assignment(), runtime }, "Job");
+  await runner.backend.settled();
+  assert.ok(lockedAtRuntime.length > 0);
+  assert.deepEqual(
+    lockedAtRuntime,
+    lockedAtRuntime.map(() => true),
+  );
+  assert.deepEqual(lockedAtStart, [false]);
+  assert.equal(
+    [...state.containers.values()].filter(
+      (container) => container.labels["io.chuggy.assignment"] === "asg-1",
+    ).length,
+    1,
+  );
+  assert.equal(existsSync(lock), false);
 });
 
 test("every pool's agent of a user starts its jobs under the one memory lock of the VM", async (t) => {
