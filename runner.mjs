@@ -46,7 +46,10 @@ import {
   engineFailureLine,
 } from "@chuggy/worker-core/engineErrors.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
-import { poolIdentityDigest } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityChatHost,
+  poolIdentityDigest,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import {
   poolRunnerClient,
   poolRunnerLoop,
@@ -116,15 +119,34 @@ const engineCallTimeoutMs = 300_000;
 export const socketPathBytesMax = 103;
 
 /**
+ * Why `poolFile` is not one a pool's commands run, or nothing: a chat host's
+ * is run by the `chat` commands.
+ *
+ * @param {PoolCredentials} credentials
+ * @param {string} poolFile
+ */
+export function poolFileRefusal(credentials, poolFile) {
+  return poolIdentityChatHost(credentials)
+    ? `${poolFile} is a chat host's, not a pool's; run it with chuggy-darwin chat run`
+    : undefined;
+}
+
+/**
+ * The pool's file and the runner's, read, refused where the pool's is a chat
+ * host's.
+ *
  * @param {string} poolFile
  * @param {string} home
  * @returns {Promise<RunnerSetup>}
  */
 export async function runnerSetup(poolFile, home) {
   const paths = runnerPaths(home);
+  const credentials = await poolCredentials(poolFile);
+  const refusal = poolFileRefusal(credentials, poolFile);
+  if (refusal !== undefined) throw new Error(refusal);
   return {
     poolFile,
-    credentials: await poolCredentials(poolFile),
+    credentials,
     config: await runnerConfig(paths.config),
     paths,
   };
@@ -234,12 +256,26 @@ export function runnerUpdates(setup, copy, ports) {
  * @returns {Promise<number>} the exit status
  */
 export async function runnerLoop(client, seams) {
-  const { underAgent, ...loop } = seams;
-  const pass = await poolRunnerLoop(client, loop);
+  const { sleep, log, updates } = seams;
+  return runnerEnded(
+    await poolRunnerLoop(client, { sleep, log, updates }),
+    seams,
+  );
+}
+
+/**
+ * The exit status of a run whose loop has ended: done where the plane denied
+ * it, and otherwise the status its agent restarts it on, said.
+ *
+ * @param {Extract<import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolPass, {passed: "Denied" | "Updated"}>} pass
+ * @param {{log: (line: string) => void, updates: WorkerPoolUpdates, underAgent: boolean}} seams
+ * @returns {number}
+ */
+export function runnerEnded(pass, seams) {
   if (pass.passed === "Denied") return 0;
   const release = `${seams.updates.updater.runner.package} ${pass.version}`;
   seams.log(
-    underAgent
+    seams.underAgent
       ? `ending, for launchd to restart this run on ${release}`
       : `ending: start this run again to run ${release}`,
   );

@@ -4,7 +4,9 @@
  * pool, which is done, since nothing but a new registration brings the pool
  * back, and ends `updatedExitStatus` when it installed a release of itself to
  * run again on. `once` fails on any pass that did not reconcile, a denial
- * among them.
+ * among them. A member's chat host is served by the `chat` commands, which
+ * take its file as the others take a pool's, and `chat run` ends as `run`
+ * does.
  */
 
 import { constants } from "node:fs";
@@ -14,9 +16,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
+import { poolLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
-import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
+import {
+  poolIdentityChatHost,
+  poolIdentityPersonal,
+  poolLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 import {
   poolRunnerPassLine,
@@ -32,12 +40,21 @@ import {
   registerRequest,
 } from "@chuggy/worker-core/register.mjs";
 
+import { chatDoctorFindings } from "./chatDoctor.mjs";
+import {
+  chatCredentialRefusal,
+  chatFileRefusal,
+  chatHostParts,
+  chatSettingsLine,
+  chatSetup,
+} from "./chatRunner.mjs";
 import { colimaCli } from "./colimaVm.mjs";
 import { diskFloorSaid } from "./diskFree.mjs";
 import { agentVersionAsked, doctorFindings, findingLine } from "./doctor.mjs";
 import { memoryBudgetSaid } from "./memoryFree.mjs";
 import { mcpServed } from "./mcp.mjs";
 import {
+  chatAgentBaseCharsMax,
   launchAgentBackground,
   launchAgentBaseCharsMax,
   launchAgentCommands,
@@ -54,7 +71,11 @@ import {
   dockerMachine,
   hostPlatform,
   jobNetwork,
+  poolFileRefusal,
+  poolRuntimeDirectory,
+  poolSocket,
   runnerDirectories,
+  runnerEnded,
   runnerLeftoversRemoved,
   runnerEngine,
   runnerLoop,
@@ -83,6 +104,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} [tokens] a run's token source, when not the pool's issuer
  * @property {Partial<import("@chuggy/worker-core/runnerUpdate.mjs").RunnerUpdatePorts>} [updatePorts] what an update reaches, where not the network, npm and this machine
  * @property {(uid: number) => Promise<boolean>} [desktop] whether the user has a desktop session, where not as launchd says
+ * @property {typeof import("node:child_process").spawn} [spawn] what starts a chat host's supervisor, when not Node's own
+ * @property {import("./power.mjs").PowerAssertion} [power] what keeps the Mac awake while a chat host serves, when not caffeinate
  * @property {string} packageName this copy's package, as its `package.json` names it
  * @property {string} version this copy's, as its `package.json` names it
  * @property {string} node this process's Node
@@ -98,15 +121,19 @@ import { runnerPaths } from "./runnerPaths.mjs";
 export const poolFileVariable = "CHUGGY_DARWIN_POOL";
 
 const usage = `usage: chuggy-darwin <command> [--pool <file>]
+       chuggy-darwin chat <command> [--pool <file>]
        chuggy-darwin register --api <origin> --token=<token> [--pool <name> | --personal]
                               [--host] [--capability <token>]...
+       chuggy-darwin register --api <origin> --token=<token> --chat
        chuggy-darwin mcp --site <origin> --workspace <workspace> --project <project>
        chuggy-darwin --version
 
   register                redeem a registration token for a pool file, the
                           pool named for this machine unless --pool names it,
                           or with --personal a member's personal token for
-                          their personal runner's file; it declares the VM's
+                          their personal runner's file, or with --chat a
+                          member's chat host token for their chat host's file;
+                          a pool or personal runner declares the VM's
                           platform, with --host this Mac's too, the agents
                           runner.json can run, and each --capability, which
                           the token must permit
@@ -120,6 +147,12 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   install-agent           write the launchd agent that runs \`run\`
   mcp                     serve chuggy's tools for one project to a coding
                           agent on stdio, under your own sign-in
+
+  chat run                serve a member's chat host until the plane denies
+                          it, or until it installs the release chuggy names
+  chat status             the chat host's settings and its supervisor
+  chat doctor             check everything the chat host needs
+  chat install-agent      write the launchd agent that runs \`chat run\`
 
 The pool file is --pool, or ${poolFileVariable}.`;
 
@@ -328,16 +361,23 @@ async function onPath(path, name) {
 }
 
 /**
- * Writes the pool file's own agent, refusing one of its name that serves
- * another file. The agent is given this shell's PATH, since launchd's own
- * holds no Homebrew docker, each entry made absolute since launchd runs an
- * agent from `/`, and runs the node that PATH finds, a link an
- * upgrade keeps, rather than the versioned binary running this.
+ * Writes the pool file's own agent of `kind`, refusing a file of the other
+ * kind's, or an agent of its name that serves another file. The agent is
+ * given this shell's PATH, since launchd's own holds no Homebrew docker, each
+ * entry made absolute since launchd runs an agent from `/`, and runs the node
+ * that PATH finds, a link an upgrade keeps, rather than the versioned binary
+ * running this.
  *
  * @param {CliCall} call
+ * @param {import("./launchAgent.mjs").LaunchAgentKind} [kind]
  */
-async function installAgent(call) {
-  await poolCredentials(call.poolFile);
+async function installAgent(call, kind = "Pool") {
+  const credentials = await poolCredentials(call.poolFile);
+  const refusal = (kind === "Chat" ? chatFileRefusal : poolFileRefusal)(
+    credentials,
+    call.poolFile,
+  );
+  if (refusal !== undefined) throw new Error(refusal);
   const paths = runnerPaths(call.host.home);
   const path = (call.host.environment.PATH ?? "")
     .split(delimiter)
@@ -353,7 +393,7 @@ async function installAgent(call) {
     throw new Error(
       "node is not on this shell's PATH, which the agent is given; run this from the shell the runner was installed from",
     );
-  const label = launchAgentLabel(call.poolFile);
+  const label = launchAgentLabel(call.poolFile, kind);
   const plist = join(paths.agents, launchAgentFileName(label));
   const existing = await plistText(plist);
   const served =
@@ -377,6 +417,7 @@ async function installAgent(call) {
       path,
       log: join(paths.logs, `${label}.log`),
       background,
+      kind,
     }),
   );
   const commands = launchAgentCommands({
@@ -399,12 +440,14 @@ async function installAgent(call) {
 
 /**
  * Redeems a registration token and writes the pool file it answers. It takes
- * no pool file: its `--pool` is the name the pool takes, and `--personal`
- * redeems a member's personal token, which names no pool. The platform it
- * declares is docker's VM's, which can differ from the Mac's, so docker is
- * asked once the ask is found sound, and must answer before the token is spent.
- * `--host` declares the Mac's own platform beside it. It declares the agents
- * the runner's file can run, and none, saying so, where it cannot be read.
+ * no pool file: its `--pool` is the name the pool takes, `--personal` redeems
+ * a member's personal token, which names no pool, and `--chat` a member's
+ * chat host token, which declares nothing. The platform a pool or personal
+ * runner declares is docker's VM's, which can differ from the Mac's, so docker
+ * is asked once the ask is found sound, and must answer before the token is
+ * spent. `--host` declares the Mac's own platform beside it. It declares the
+ * agents the runner's file can run, and none, saying so, where it cannot be
+ * read.
  *
  * @param {CliHost} host
  * @param {Omit<import("@chuggy/worker-core/register.mjs").RegisterAsked, "capabilities"> & {host?: boolean | undefined, capability?: string[] | undefined}} asked each `--capability` once per token
@@ -416,6 +459,8 @@ async function register(host, { capability, host: hosted, ...named }) {
     host.err(ask.refused);
     return 2;
   }
+  if (ask.checked.kind === "ChatHost")
+    return await registerFiled(host, ask.checked, "Chat");
   const platform = hostPlatform(host.arch);
   if (hosted === true && platform === undefined) {
     host.err(
@@ -424,7 +469,7 @@ async function register(host, { capability, host: hosted, ...named }) {
     return 2;
   }
   const { arch } = await dockerMachine(host.engine ?? runnerEngine());
-  const { pools, config } = runnerPaths(host.home);
+  const { config } = runnerPaths(host.home);
   const agents = await registerAgentsRead(config, hosted === true);
   const requested = registerRequest(asked, {
     hostname: host.hostname,
@@ -437,12 +482,27 @@ async function register(host, { capability, host: hosted, ...named }) {
     return 2;
   }
   if ("none" in agents) host.err(agents.none);
+  return await registerFiled(host, requested.request, "Pool");
+}
+
+/**
+ * Spends the token on `request` and writes the file chuggy answers, named so
+ * that its agent of `kind` can be, then says what comes next: the restart of
+ * the agent already serving the file, or the commands that check it and
+ * write its agent.
+ *
+ * @param {CliHost} host
+ * @param {import("@chuggy/worker-core/register.mjs").RegisterRequest} request
+ * @param {import("./launchAgent.mjs").LaunchAgentKind} kind
+ */
+async function registerFiled(host, request, kind) {
+  const { pools, agents } = runnerPaths(host.home);
   await registerPoolDirectory(pools);
-  const pool = await registerRedeemed(requested.request, host.fetch);
+  const pool = await registerRedeemed(request, host.fetch);
   const { file, replaced } = await registerPoolFileWritten(
     pools,
     pool,
-    launchAgentBaseCharsMax,
+    kind === "Chat" ? chatAgentBaseCharsMax : launchAgentBaseCharsMax,
   ).catch((/** @type {unknown} */ failure) => {
     throw new Error(
       `the pool file could not be written, and the token is spent, so mint another: ${failure instanceof Error ? failure.message : String(failure)}`,
@@ -451,13 +511,13 @@ async function register(host, { capability, host: hosted, ...named }) {
   });
   await poolCredentials(file);
   const verb = replaced ? "replaced" : "wrote";
-  const label = launchAgentLabel(file);
-  const agent = await plistText(
-    join(runnerPaths(host.home).agents, launchAgentFileName(label)),
-  ).catch(() => undefined);
+  const label = launchAgentLabel(file, kind);
+  const agent = await plistText(join(agents, launchAgentFileName(label))).catch(
+    () => undefined,
+  );
   if (agent !== undefined && launchAgentPoolFile(agent) === file) {
     host.out(
-      poolIdentityPersonal(pool)
+      poolIdentityPersonal(pool) || poolIdentityChatHost(pool)
         ? `${verb} ${file}; its agent runs the registration it read when it started until it is restarted:`
         : `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
     );
@@ -466,9 +526,10 @@ async function register(host, { capability, host: hosted, ...named }) {
     );
     return 0;
   }
+  const command = kind === "Chat" ? "chuggy-darwin chat" : "chuggy-darwin";
   host.out(`${verb} ${file}; next:`);
-  host.out(`  chuggy-darwin doctor --pool ${shellQuoted(file)}`);
-  host.out(`  chuggy-darwin install-agent --pool ${shellQuoted(file)}`);
+  host.out(`  ${command} doctor --pool ${shellQuoted(file)}`);
+  host.out(`  ${command} install-agent --pool ${shellQuoted(file)}`);
   return 0;
 }
 
@@ -539,6 +600,154 @@ async function mcp(host, values, positionals) {
   }
 }
 
+/**
+ * Serves a member's chat host until the plane denies it, which is done, or
+ * its runner installs a release of itself, which its agent restarts it on.
+ * It claims the host's control socket before removing what a killed run
+ * left, as a pool's service does, and keeps the Mac from idle sleep while it
+ * serves, since a sleeping Mac pauses the VM its sessions run in.
+ *
+ * @param {CliCall} call
+ */
+async function chatRun(call) {
+  const setup = await chatSetup(call.poolFile, call.host.home);
+  const refusal = await chatCredentialRefusal(setup.config, call.host);
+  if (refusal !== undefined) throw new Error(refusal);
+  const updates = runnerUpdates(
+    setup,
+    runnerCopy(call.host),
+    call.host.updatePorts,
+  );
+  const parts = await chatHostParts(setup, {
+    log: call.host.out,
+    runner: { package: call.host.packageName, version: call.host.version },
+    updates,
+    engine: call.host.engine,
+    tokens: call.host.tokens,
+    fetch: call.host.fetch,
+    spawn: call.host.spawn,
+    power: call.host.power,
+  });
+  await runnerDirectories(setup.paths, parts.runtime);
+  const server = await controlServer(parts.socket, {
+    inFlight: () => [parts.host.status()],
+    stop: async () => ({
+      refused: "a chat host's sessions are stopped in chuggy",
+    }),
+  });
+  try {
+    await runnerLeftoversRemoved(parts.runtime);
+    scratchRemovedOnSignal(parts.runtime);
+    if ((await jobNetwork(parts.engine, setup.config.network)) === "Created")
+      call.host.out(`made the network ${setup.config.network}`);
+    parts.power.held(true);
+    return runnerEnded(await parts.host.run(), {
+      log: call.host.out,
+      updates,
+      underAgent: launchAgentRunning(
+        call.host.environment,
+        call.poolFile,
+        "Chat",
+      ),
+    });
+  } finally {
+    parts.power.held(false);
+    server.close();
+  }
+}
+
+/**
+ * The chat host's settings, and what its service says of its supervisor and
+ * the images, with the supervisor's container as docker lists it.
+ *
+ * @param {CliCall} call
+ */
+async function chatStatus(call) {
+  const setup = await chatSetup(call.poolFile, call.host.home);
+  const socket = poolSocket(
+    poolRuntimeDirectory(setup.paths, setup.credentials),
+  );
+  const answered =
+    /** @type {{inFlight: import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus[]} | undefined} */ (
+      await controlAsked(socket, { op: "status" })
+    );
+  call.host.out(
+    answered === undefined ? "service: not running" : "service: running",
+  );
+  call.host.out(`settings: ${chatSettingsLine(setup.config)}`);
+  const [served] = answered?.inFlight ?? [];
+  if (served !== undefined) {
+    call.host.out(
+      `supervisor: ${served.supervisor.toLowerCase()}${served.starting ? ", starting another" : ""}, running ${served.used ?? "no image yet"}`,
+    );
+    call.host.out(
+      `image: chuggy names ${served.named ?? "none yet"}${served.own === undefined ? "" : `, and the host runs its own, ${served.own.image}`}`,
+    );
+  }
+  const engine = call.host.engine ?? runnerEngine();
+  const listed = await engine.exec(chatContainersArgv(setup.credentials));
+  if (listed.code !== 0)
+    throw new Error(`docker could not be asked: ${engineFailureLine(listed)}`);
+  for (const line of listed.stdout.split("\n").filter((row) => row !== ""))
+    call.host.out(line);
+  return 0;
+}
+
+/**
+ * The chat host's supervisor's container, running or not, a line each.
+ *
+ * @param {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} credentials
+ */
+function chatContainersArgv(credentials) {
+  return [
+    "ps",
+    "--all",
+    "--filter",
+    `label=${poolLabel}=${poolLabelValue(credentials)}`,
+    "--format",
+    "{{.Names}}  {{.Status}}  {{.Image}}",
+  ];
+}
+
+/**
+ * Which copy is speaking, under which Node, and then each check of the chat
+ * host's.
+ *
+ * @param {CliCall} call
+ */
+async function chatDoctor(call) {
+  const { host } = call;
+  host.out(
+    `chuggy-darwin ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
+  );
+  const paths = runnerPaths(host.home);
+  const findings = await chatDoctorFindings({
+    poolFile: call.poolFile,
+    paths,
+    uid: host.uid,
+    home: host.home,
+    parts: {
+      engine: () => host.engine ?? runnerEngine(),
+      tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
+      plane: (credentials, idleSecs) =>
+        poolRunnerPlane(
+          credentials,
+          { package: host.packageName, version: host.version },
+          undefined,
+          idleSecs,
+          host.fetch,
+        ),
+      updates: (config) =>
+        runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
+    },
+  });
+  for (const finding of findings)
+    (finding.passed && finding.warning !== true ? host.out : host.err)(
+      findingLine(finding),
+    );
+  return findings.every((finding) => finding.passed) ? 0 : 1;
+}
+
 const commands = {
   run,
   once,
@@ -548,12 +757,21 @@ const commands = {
   "install-agent": installAgent,
 };
 
+/** @type {Record<string, (call: CliCall) => Promise<number>>} */
+const chatCommands = {
+  run: chatRun,
+  status: chatStatus,
+  doctor: chatDoctor,
+  "install-agent": (call) => installAgent(call, "Chat"),
+};
+
 /** Every option a command is parsed with. */
 const cliOptions = /** @type {const} */ ({
   pool: { type: "string" },
   api: { type: "string" },
   token: { type: "string" },
   personal: { type: "boolean" },
+  chat: { type: "boolean" },
   host: { type: "boolean" },
   capability: { type: "string", multiple: true },
   site: { type: "string" },
@@ -592,19 +810,27 @@ export async function cliMain(argv, host) {
   }
   if (name === "mcp") return await mcp(host, values, positionals);
   const registering = name === "register";
-  const command = Object.hasOwn(commands, name ?? "")
-    ? commands[/** @type {keyof typeof commands} */ (name)]
-    : undefined;
+  const chatting = name === "chat";
+  const [chatName, ...chatPositionals] = positionals;
+  const command = chatting
+    ? Object.hasOwn(chatCommands, chatName ?? "")
+      ? chatCommands[/** @type {string} */ (chatName)]
+      : undefined
+    : Object.hasOwn(commands, name ?? "")
+      ? commands[/** @type {keyof typeof commands} */ (name)]
+      : undefined;
   if (
     (!registering &&
       (command === undefined ||
         values.api !== undefined ||
         values.token !== undefined ||
         values.personal !== undefined ||
+        values.chat !== undefined ||
         values.host !== undefined ||
         values.capability !== undefined)) ||
     mcpOptions.some((option) => values[option] !== undefined) ||
-    (name !== "stop" && positionals.length > 0)
+    (chatting && chatPositionals.length > 0) ||
+    (!chatting && name !== "stop" && positionals.length > 0)
   ) {
     host.err(usage);
     return 2;
@@ -621,7 +847,7 @@ export async function cliMain(argv, host) {
     return await /** @type {(call: CliCall) => Promise<number>} */ (command)({
       host,
       poolFile: resolve(/** @type {string} */ (poolFile)),
-      positionals,
+      positionals: chatting ? chatPositionals : positionals,
     });
   } catch (failure) {
     host.err(failure instanceof Error ? failure.message : String(failure));
