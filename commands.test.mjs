@@ -697,6 +697,38 @@ test("once the plane denies fails with why, and is refused while this pool's ser
   );
 });
 
+/**
+ * Catches a run that fails on a file leaving a personal runner no work, which
+ * launchd would restart every few seconds for as long as the file says so.
+ */
+test("run of a personal runner whose concurrencyMax is 0 says why and exits 0, once refuses it, and status prints it as the limits", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    pool: {
+      ...registeredPersonalFixture,
+      capabilities: ["Platform:Linux:Arm64"],
+    },
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+  });
+  const said = `runner configuration ${paths.config}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.vteng.chuggy.shame.concurrencyMax above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`;
+  const { engine, state } = fakeEngine();
+  const ran = await called(["run", "--pool", poolFile], { home, engine });
+  assert.equal(ran.status, 0, ran.err);
+  assert.equal(ran.out, said);
+  assert.ok(!state.networks.has("chuggy-jobs"), "the run went no further");
+  const once = await called(["once", "--pool", poolFile], { home, engine });
+  assert.equal(once.status, 1);
+  assert.equal(once.err, said);
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(status.status, 0, status.err);
+  assert.deepEqual(status.out.split("\n").slice(0, 2), [
+    "service: not running",
+    `limits: ${said}`,
+  ]);
+});
+
 test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
   const { home, poolFile, paths } = await runnerFixture(t, {
     runner: { concurrencyMax: 3, sessionsMax: 4 },

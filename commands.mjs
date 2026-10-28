@@ -2,11 +2,13 @@
  * The `chuggy-darwin` commands. Each answers an exit status: 0 done, 1 failed,
  * 2 asked wrongly. `run` ends without failing only when the plane denies the
  * pool, which is done, since nothing but a new registration brings the pool
- * back, and ends `updatedExitStatus` when it installed a release of itself to
- * run again on. `once` fails on any pass that did not reconcile, a denial
- * among them. A member's chat host's file is served by the same commands,
- * the file's kind choosing which: `run` ends as a pool's does, and `once` and
- * `stop` are refused of it.
+ * back, or when the runner's file leaves a personal runner no work, which it
+ * says, since a restart is refused alike until the file changes; and ends
+ * `updatedExitStatus` when it installed a release of itself to run again on.
+ * `once` fails on any pass that did not reconcile, a denial among them, and
+ * where the file leaves the pool no work. A member's chat host's file is
+ * served by the same commands, the file's kind choosing which: `run` ends as
+ * a pool's does, and `once` and `stop` are refused of it.
  */
 
 import { constants } from "node:fs";
@@ -192,6 +194,11 @@ async function started(call, command = { polls: true }) {
  */
 async function run(call) {
   const { setup, runner } = await started(call);
+  const { client } = runner;
+  if (client === undefined) {
+    call.host.out(String(runner.idle));
+    return 0;
+  }
   const updates = runnerUpdates(
     setup,
     runnerCopy(call.host),
@@ -204,7 +211,7 @@ async function run(call) {
     scratchRemovedOnSignal(runner.runtime);
     if ((await jobNetwork(runner.engine, setup.config.network)) === "Created")
       call.host.out(`made the job network ${setup.config.network}`);
-    return await runnerLoop(runner.client, {
+    return await runnerLoop(client, {
       sleep: (ms) => delay(ms),
       log: call.host.out,
       updates,
@@ -218,6 +225,11 @@ async function run(call) {
 /** @param {CliCall} call */
 async function once(call) {
   const { setup, runner } = await started(call);
+  const { client } = runner;
+  if (client === undefined) {
+    call.host.err(String(runner.idle));
+    return 1;
+  }
   if ((await controlAsked(runner.socket, { op: "status" })) !== undefined) {
     call.host.err(
       "a chuggy-darwin service is running this pool; stop it before a pass of your own",
@@ -228,7 +240,7 @@ async function once(call) {
   await runnerLeftoversRemoved(runner.runtime);
   scratchRemovedOnSignal(runner.runtime);
   await jobNetwork(runner.engine, setup.config.network);
-  const pass = await workerPoolClientPass(runner.client);
+  const pass = await workerPoolClientPass(client);
   await runner.backend.settled();
   if (pass.passed === "Reconciled") {
     call.host.out(poolRunnerPassLine(pass));
@@ -250,7 +262,7 @@ async function status(call) {
     answered === undefined ? "service: not running" : "service: running",
   );
   call.host.out(
-    `limits: ${runnerConfigLimits(setup.config, setup.poolFile, setup.credentials)}`,
+    `limits: ${runner.idle ?? runnerConfigLimits(setup.config, setup.poolFile, setup.credentials)}`,
   );
   const disk = await diskFloorSaid(setup.config, runner.engine, runner.colima);
   call.host.out(`disk floor: ${disk.detail}`);

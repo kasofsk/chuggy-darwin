@@ -525,7 +525,7 @@ test("a pool's entry in pools sets its own service's limits in place of the file
     );
     assert.equal(runnerConfigLimits(config, poolFile, fixturePool), line, name);
     assert.equal(
-      runnerPoolLimitsRefusal(config, poolFile, fixturePool),
+      runnerPoolLimitsRefusal(config, paths.config, poolFile, fixturePool),
       undefined,
     );
   }
@@ -561,14 +561,19 @@ test("a personal runner's service holds no session whatever the file or its entr
       said,
     );
     assert.equal(
-      runnerPoolLimitsRefusal(config, poolFile, registeredPersonalFixture),
+      runnerPoolLimitsRefusal(
+        config,
+        paths.config,
+        poolFile,
+        registeredPersonalFixture,
+      ),
       undefined,
       said,
     );
   }
 });
 
-test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, while a pool's takes sessions alone", async (t) => {
+test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's takes sessions alone", async (t) => {
   const name = "newtenant.member";
   const poolFile = `/pools/${name}.json`;
   /** @type {[Record<string, unknown>, string][]} */
@@ -583,11 +588,16 @@ test("a personal runner's service is refused where its concurrencyMax is 0, nami
     const { paths } = await runnerFixture(t, { runner });
     const config = await runnerConfig(paths.config);
     assert.equal(
-      runnerPoolLimitsRefusal(config, poolFile, registeredPersonalFixture),
-      `${poolFile} is a personal runner's, which chuggy gives no session, and ${key} is 0, so it would take no work; set ${key} above 0`,
+      runnerPoolLimitsRefusal(
+        config,
+        paths.config,
+        poolFile,
+        registeredPersonalFixture,
+      ),
+      `runner configuration ${paths.config}: ${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.${name}.concurrencyMax above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`,
     );
     assert.equal(
-      runnerPoolLimitsRefusal(config, poolFile, fixturePool),
+      runnerPoolLimitsRefusal(config, paths.config, poolFile, fixturePool),
       undefined,
     );
   }

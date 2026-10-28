@@ -77,6 +77,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
  * @typedef {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
@@ -103,7 +104,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {Engine} engine
  * @property {import("./colimaVm.mjs").ColimaCli} colima what reaches docker's VM, which its free disk is measured in
  * @property {ContainerBackend} backend
- * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
+ * @property {WorkerPoolClient | undefined} client whose backend keeps the Mac awake while the pool holds work, none where `idle` says why the runner's file leaves the pool's service no work
+ * @property {string | undefined} idle why the runner's file leaves the pool's service no work, or nothing
  */
 
 /** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
@@ -134,7 +136,7 @@ export function poolFileRefusal(credentials, poolFile) {
 
 /**
  * The pool's file and the runner's, read, refused where the pool's is a chat
- * host's or the runner's leaves it no work.
+ * host's.
  *
  * @param {string} poolFile
  * @param {string} home
@@ -145,10 +147,12 @@ export async function runnerSetup(poolFile, home) {
   const credentials = await poolCredentials(poolFile);
   const refusal = poolFileRefusal(credentials, poolFile);
   if (refusal !== undefined) throw new Error(refusal);
-  const config = await runnerConfig(paths.config);
-  const idle = runnerPoolLimitsRefusal(config, poolFile, credentials);
-  if (idle !== undefined) throw new Error(idle);
-  return { poolFile, credentials, config, paths };
+  return {
+    poolFile,
+    credentials,
+    config: await runnerConfig(paths.config),
+    paths,
+  };
 }
 
 /**
@@ -526,13 +530,42 @@ export async function runnerParts(setup, host) {
     ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
   });
   const power = host.power ?? powerAssertion({ log: host.log });
-  const client = poolRunnerClient(
+  const { client, idle } = runnerClient(setup, poweredBackend(backend, power), {
+    tokens,
+    fetch: host.fetch,
+    runner: host.runner,
+    capabilities,
+  });
+  return { runtime, socket, engine, colima, backend, client, idle };
+}
+
+/**
+ * The pool's client, or why the runner's file leaves its service no work and
+ * so none is made.
+ *
+ * @param {RunnerSetup} setup
+ * @param {WorkerPoolBackend} backend
+ * @param {Parameters<typeof poolRunnerClient>[3]} seams
+ * @returns {{client: WorkerPoolClient | undefined, idle: string | undefined}}
+ */
+function runnerClient(setup, backend, seams) {
+  const { credentials, config, paths, poolFile } = setup;
+  const idle = runnerPoolLimitsRefusal(
+    config,
+    paths.config,
+    poolFile,
     credentials,
-    poweredBackend(backend, power),
-    runnerPoolLimits(config, setup.poolFile, credentials),
-    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
   );
-  return { runtime, socket, engine, colima, backend, client };
+  if (idle !== undefined) return { client: undefined, idle };
+  return {
+    client: poolRunnerClient(
+      credentials,
+      backend,
+      runnerPoolLimits(config, poolFile, credentials),
+      seams,
+    ),
+    idle,
+  };
 }
 
 /**
