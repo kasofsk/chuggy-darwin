@@ -4,11 +4,16 @@
  *
  * IT PULLS THE SESSION IMAGE where it is not here, as a run would, since
  * whether it can be pulled is what is checked, and then runs it once, as the
- * supervisor runs, to ask the owner the VM presents the credential as. That
- * container mounts no volume of the host's and reaches no network. Its one
- * poll is made only where no service of the host answers: a held-nothing
- * poll is what a host makes before its supervisor is ready, and a service
- * serving sessions has already heard the image chuggy names.
+ * supervisor runs but holding no capability, to read the credential as the
+ * supervisor reads it. That container mounts no volume of the host's and
+ * reaches no network. Its one poll is made only where no service of the host
+ * answers: a held-nothing poll is what a host makes before its supervisor is
+ * ready, and a service serving sessions has already heard the image chuggy
+ * names.
+ *
+ * A SERVICE THAT ANSWERS IS THERE, whether or not this copy can read what it
+ * says, as an older copy of the runner mid-update may answer: its
+ * supervisor's container is its own, and nothing here says to remove it.
  */
 
 import {
@@ -18,10 +23,6 @@ import {
   chatSupervisorContainer,
   chatSupervisorName,
 } from "@chuggy/worker-core/chatHost.mjs";
-import {
-  chatSessionUidCount,
-  chatSessionUidFirst,
-} from "@chuggy/worker-core/chatSession.mjs";
 import { chatSupervisorVariables } from "@chuggy/worker-core/chatSupervisor.mjs";
 import {
   chatSupervisorRunArgv,
@@ -41,7 +42,6 @@ import {
 } from "@chuggy/worker-core/registryAuth.mjs";
 
 import {
-  chatCredentialOwner,
   chatCredentialRefusal,
   chatFileRefusal,
   chatHostSettings,
@@ -88,12 +88,14 @@ import { runnerConfig } from "./runnerConfig.mjs";
  * @property {ChatHostSettings} settings
  * @property {Engine} engine
  * @property {string} runtime the host's runtime directory
- * @property {ChatHostStatus | undefined} served what the host's running service says of it, where one answers
+ * @property {ChatDoctorService} service what the host's running service says of it
  * @property {string | undefined} token the pool's, where one was issued
+ *
+ * @typedef {{none: true} | {status: ChatHostStatus} | {unreadable: string}} ChatDoctorService no service answers at the host's door, or one answers what this copy reads, or one answers what it cannot
  */
 
-/** Run in the session image as the supervisor is, it prints the credential's owner as the supervisor would see it. */
-const chatOwnerProbe = `const { uid, gid } = require("node:fs").statSync(process.env.${chatSupervisorVariables.credential}); console.log(uid + " " + gid);`;
+/** Run in the session image as the supervisor is, it reads the credential, and prints the owner the share presents it as. */
+const chatOwnerProbe = `const fs = require("node:fs"); const file = process.env.${chatSupervisorVariables.credential}; fs.readFileSync(file); const { uid, gid } = fs.statSync(file); console.log(uid + " " + gid);`;
 
 /** The node every session image runs the supervisor under. */
 const chatProbeNode = "/opt/chuggy/bin/node";
@@ -110,10 +112,15 @@ const chatRemovableStates = ["created", "exited", "dead"];
  * @returns {Promise<[string, string]>}
  */
 async function chatImageNamed(input, read) {
-  const { credentials, settings, served, token } = read;
+  const { credentials, settings, service, token } = read;
   if (settings.image !== undefined)
     return [settings.image.image, `${settings.image.image}, chat.image's`];
-  if (served !== undefined) {
+  if ("unreadable" in service)
+    throw new Error(
+      `a service of this host answers, but not as this copy reads it, so no poll is made beside it: ${service.unreadable}`,
+    );
+  if ("status" in service) {
+    const served = service.status;
     if (served.named === undefined)
       throw new Error("the running service has heard no image from chuggy yet");
     return [
@@ -182,8 +189,10 @@ async function chatImagePulled(read, image) {
 
 /**
  * The probe's run: the supervisor's container, as the core runs it, but for
- * its volumes, its network and its command, so it holds the credential as
- * the supervisor does. Its environment's values are handed to docker's own.
+ * its volumes, its network, its command and its capabilities, of which it
+ * holds none, so it reads the credential as the supervisor does: as root,
+ * the owner it is told, with no capability past a file's mode. Its
+ * environment's values are handed to docker's own.
  *
  * @param {ChatDoctorRead} read
  * @param {string} image
@@ -199,6 +208,7 @@ export function chatOwnerProbeRun(read, image) {
     "docker",
     {
       ...container,
+      capabilities: { drop: ["ALL"], add: [] },
       volumes: [],
       command: [chatProbeNode, "-e", chatOwnerProbe],
     },
@@ -226,10 +236,10 @@ async function chatLeftoverRemoved(engine, name) {
 }
 
 /**
- * The credential's owner as the VM presents it to the supervisor, passed
- * only where it is `chatCredentialOwner`, root: the supervisor reads the
- * credential as its owner, and only its owner enters the credentials'
- * directory, so an owner a session runs as would hand that session the file.
+ * Whether root, holding no capability, can read the credential through the
+ * VM's share, which presents a file as owned by whoever asks of it: the
+ * supervisor reads it so, as the owner it is told, root, and a credential it
+ * cannot read starts no session.
  *
  * @param {ChatDoctorRead} read
  * @param {string} image
@@ -245,50 +255,104 @@ async function chatOwnerProbed(read, image) {
   const probed = await engine.exec(argv, { environment });
   if (probed.code !== 0)
     throw new Error(
-      `${image} could not read the credential as the supervisor would: ${engineFailureLine(probed)}`,
+      `root in ${image}, holding no capability, could not read the credential as the supervisor would; another process in the VM may have read it within the second: ${engineFailureLine(probed)}`,
     );
   const [line] = probed.stdout.split("\n").filter((said) => said !== "");
   if (line === undefined)
-    throw new Error(`${image} said nothing of the credential's owner`);
-  const [uid, gid] = line.split(" ").map(Number);
-  const last = chatSessionUidFirst + chatSessionUidCount - 1;
-  if (uid !== chatCredentialOwner.uid || gid !== chatCredentialOwner.gid)
-    throw new Error(
-      `the VM presents the credential to the supervisor as uid ${String(uid)}, gid ${String(gid)}, not as root's${Number(uid) >= chatSessionUidFirst && Number(uid) <= last ? ", and as a user a session runs as" : ""}; another process in the VM may have read it within the second`,
-    );
+    throw new Error(`${image} said nothing of the credential it read`);
+  const [uid, gid] = line.split(" ");
   return [
     true,
-    `the VM presents it to the supervisor as root's, uid ${String(chatCredentialOwner.uid)}, outside the users ${String(chatSessionUidFirst)} to ${String(last)} a session runs as`,
+    `root, holding no capability, reads it as the supervisor would, the VM presenting it as uid ${String(uid)}, gid ${String(gid)}`,
   ];
 }
 
 /**
  * The supervisor's container as docker has it: none, or one a start removes,
  * or the running service's. One running where no service of the host
- * answers refuses every start beside it, and is never removed by force.
+ * answers refuses every start beside it, and is never removed by force. One
+ * whose service answers what this copy cannot read is that service's, and
+ * is warned of, never named for removal.
  *
  * @param {ChatDoctorRead} read
- * @returns {Promise<[true, string]>}
+ * @returns {Promise<DoctorFinding>}
  */
-async function chatSupervisorFound(read) {
+async function chatSupervisorFinding(read) {
+  const check = "supervisor container";
   const name = chatSupervisorName(read.credentials);
   const inspected = await read.engine.exec(inspectArgv([name]));
-  if (inspected.code !== 0) {
-    if (engineFailure(inspected) === "NoSuchContainer")
-      return [true, `none named ${name}; a run starts it`];
-    throw new Error(engineFailureLine(inspected));
-  }
-  const [container] = /** @type {{State?: {Status?: string}}[]} */ (
-    JSON.parse(inspected.stdout)
-  );
-  const state = container?.State?.Status ?? "unknown";
+  if (inspected.code !== 0)
+    return engineFailure(inspected) === "NoSuchContainer"
+      ? { check, passed: true, detail: `none named ${name}; a run starts it` }
+      : { check, passed: false, detail: engineFailureLine(inspected) };
+  const state = chatContainerState(inspected.stdout);
+  if (state === undefined)
+    return {
+      check,
+      passed: false,
+      detail: `docker said nothing this copy reads of ${name}'s state`,
+    };
+  const { service } = read;
   if (chatRemovableStates.includes(state))
-    return [true, `${name} is ${state}, and a run removes it`];
-  if (read.served !== undefined)
-    return [true, `${name} is ${state}, the running service's`];
-  throw new Error(
-    `${name} is ${state}, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}`,
-  );
+    return {
+      check,
+      passed: true,
+      detail: `${name} is ${state}, and a run removes it`,
+    };
+  if ("status" in service)
+    return {
+      check,
+      passed: true,
+      detail: `${name} is ${state}, the running service's`,
+    };
+  if ("unreadable" in service)
+    return {
+      check,
+      passed: true,
+      warning: true,
+      detail: `${name} is ${state}, the running service's, which answers what this copy cannot read: ${service.unreadable}`,
+    };
+  return {
+    check,
+    passed: false,
+    detail: `${name} is ${state}, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}`,
+  };
+}
+
+/**
+ * A container's state as docker's inspection of it says, or nothing where
+ * it says none.
+ *
+ * @param {string} inspected
+ */
+function chatContainerState(inspected) {
+  try {
+    const [container] = /** @type {{State?: {Status?: string}}[]} */ (
+      JSON.parse(inspected)
+    );
+    return container?.State?.Status;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What the host's service at `socket` says, told apart from none being
+ * there, which is the only answer read as no service: one that answers what
+ * this copy cannot read is still there.
+ *
+ * @param {string} socket
+ * @returns {Promise<ChatDoctorService>}
+ */
+async function chatServiceAsked(socket) {
+  try {
+    const status = await chatHostStatusAsked(socket);
+    return status === undefined ? { none: true } : { status };
+  } catch (failure) {
+    return {
+      unreadable: failure instanceof Error ? failure.message : String(failure),
+    };
+  }
 }
 
 /**
@@ -386,14 +450,10 @@ async function chatEngineChecked(input, credentials, found, findings) {
     ...found,
     engine,
     runtime,
-    served: await chatHostStatusAsked(poolSocket(runtime)).catch(
-      () => undefined,
-    ),
+    service: await chatServiceAsked(poolSocket(runtime)),
     token: undefined,
   };
-  await checked(findings, "supervisor container", () =>
-    chatSupervisorFound(read),
-  );
+  findings.push(await chatSupervisorFinding(read));
   findings.push(chatMemoryFinding(found.settings, machine.size.memoryMib));
   read.token = await poolTokenChecked(
     input.parts.tokens(credentials),

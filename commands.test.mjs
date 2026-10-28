@@ -1536,10 +1536,10 @@ const issuedTokens = {
 
 /**
  * Docker held in memory, its VM room for the default supervisor's cap,
- * answering the doctor's probe of the credential's owner with the owner
- * given.
+ * answering the doctor's probe of the credential with the owner given, or
+ * with the probe's failure to read it where none is.
  *
- * @param {string} owner `uid gid`, as the probe prints them
+ * @param {string | undefined} owner `uid gid`, as the probe prints them
  */
 function probedEngine(owner) {
   const { engine, state } = fakeEngine();
@@ -1549,9 +1549,15 @@ function probedEngine(owner) {
     ...engine,
     exec: async (argv, call) => {
       const answer = await engine.exec(argv, call);
-      return argv[0] === "run" && argv.includes("-e")
-        ? { ...answer, stdout: `${owner}\n` }
-        : answer;
+      if (argv[0] !== "run" || !argv.includes("-e")) return answer;
+      return owner === undefined
+        ? {
+            code: 1,
+            stdout: "",
+            stderr:
+              "Error: EACCES: permission denied, open '/var/run/chuggy/credentials/provider/token'\n",
+          }
+        : { ...answer, stdout: `${owner}\n` };
     },
   };
   return { engine: probed, state };
@@ -1578,6 +1584,12 @@ function probeAsserted(state, tokenFile) {
     ["--network", "none"],
   );
   assert.ok(!probe.argv.some((arg) => arg.startsWith("type=volume")));
+  assert.deepEqual(
+    probe.argv.filter((arg, index) =>
+      ["--cap-drop", "--cap-add"].includes(probe.argv[index - 1] ?? ""),
+    ),
+    ["ALL"],
+  );
   assert.ok(
     probe.argv.includes(
       `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/provider,readonly`,
@@ -1635,7 +1647,7 @@ test("doctor of a chat host checks the host's file, the credential's layout, doc
   assert.match(out, /image pulled: ghcr\.io\/shame\/chat:1 was pulled$/mu);
   assert.match(
     out,
-    /credential owner: the VM presents it to the supervisor as root's, uid 0, outside the users 20000 to 20031 a session runs as$/mu,
+    /credential owner: root, holding no capability, reads it as the supervisor would, the VM presenting it as uid 0, gid 0$/mu,
   );
   probeAsserted(state, tokenFile);
   assert.match(
@@ -1695,25 +1707,90 @@ test("doctor of a chat host fails a running supervisor no service of the host an
   );
 });
 
-test("doctor of a chat host fails a credential the VM presents as a session's user's, or as anyone's but root's, and one sharing its directory", async (t) => {
+/**
+ * A chat host whose supervisor's container runs, its doctor asked.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {(t: import("node:test").TestContext, socket: string) => Promise<unknown>} serve what answers at the host's door
+ */
+async function runningDoctored(t, serve) {
+  const { home, poolFile, paths } = await chatFixture(t);
+  await serve(
+    t,
+    controlSocketPath(poolRuntimeDirectory(paths, fixtureChatHost)),
+  );
+  const { fetch, requests } = answeringFetch(500, "");
+  const { engine, state } = probedEngine("0 0");
+  state.images.add(namedImage);
+  const name = `chuggy-chat-${poolIdentityDigest(fixtureChatHost)}`;
+  state.containers.set(name, {
+    id: "c1",
+    name,
+    labels: {},
+    status: "running",
+    image: namedImage,
+  });
+  const doctored = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine,
+    fetch,
+    tokens: issuedTokens,
+  });
+  assert.equal(state.containers.get(name)?.status, "running");
+  assert.equal(requests.length, 0, "no poll is made beside a service");
+  return { ...doctored, name };
+}
+
+test("doctor of a chat host passes a running supervisor its running service answers for", async (t) => {
+  const { status, out, err, name } = await runningDoctored(t, (t, socket) =>
+    chatServed(t, socket, {
+      named: namedImage,
+      supervisor: "Ready",
+      starting: false,
+    }),
+  );
+  assert.equal(status, 0, err);
+  assert.match(
+    out,
+    new RegExp(
+      `^ok {4}supervisor container: ${name} is running, the running service's$`,
+      "mu",
+    ),
+  );
+  assert.ok(!`${out}${err}`.includes("rm -f"));
+});
+
+test("doctor of a chat host whose service answers what it cannot read takes the running supervisor as that service's, never naming its removal, and polls nothing", async (t) => {
+  const { status, out, err, name } = await runningDoctored(t, controlServed);
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    new RegExp(
+      `^warn {2}supervisor container: ${name} is running, the running service's, which answers what this copy cannot read: .+$`,
+      "mu",
+    ),
+  );
+  assert.match(
+    err,
+    /^FAIL {2}session image: a service of this host answers, but not as this copy reads it, so no poll is made beside it: .+$/mu,
+  );
+  assert.ok(!`${out}${err}`.includes("rm -f"));
+});
+
+test("doctor of a chat host fails a credential root holding no capability cannot read, and one sharing its directory", async (t) => {
   const { home, poolFile, tokenFile } = await chatFixture(t, {
     runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
   });
-  for (const [owner, line] of /** @type {const} */ ([
-    [
-      "20000 20000",
-      /as uid 20000, gid 20000, not as root's, and as a user a session runs as/u,
-    ],
-    ["501 20", /as uid 501, gid 20, not as root's;/u],
-  ])) {
-    const { status, err } = await called(["doctor", "--pool", poolFile], {
-      home,
-      engine: probedEngine(owner).engine,
-      tokens: issuedTokens,
-    });
-    assert.equal(status, 1);
-    assert.match(err, line);
-  }
+  const { status, err } = await called(["doctor", "--pool", poolFile], {
+    home,
+    engine: probedEngine(undefined).engine,
+    tokens: issuedTokens,
+  });
+  assert.equal(status, 1);
+  assert.match(
+    err,
+    /^FAIL {2}credential owner: root in ghcr\.io\/shame\/chat:1, holding no capability, could not read the credential as the supervisor would; another process in the VM may have read it within the second: .*EACCES/mu,
+  );
   await writeFile(join(dirname(tokenFile), "notes"), "x");
   const shared = await called(["doctor", "--pool", poolFile], {
     home,
