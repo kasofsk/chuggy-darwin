@@ -65,6 +65,7 @@ import { runnerConfig } from "./runnerConfig.mjs";
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/engine.mjs").EngineAnswer} EngineAnswer
  * @typedef {import("./doctor.mjs").DoctorFinding} DoctorFinding
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
@@ -268,52 +269,70 @@ async function chatOwnerProbed(read, image) {
 }
 
 /**
- * The supervisor's container as docker has it: none, or one a start removes,
- * or the running service's. One running where no service of the host
- * answers refuses every start beside it, and is never removed by force. One
- * whose service answers what this copy cannot read is that service's, and
- * is warned of, never named for removal.
+ * The supervisor's container as docker has it, then what the host's service
+ * says: none, or one a start removes, or the running service's. The container
+ * is inspected before the service is asked, since the service binds its
+ * socket before it starts the supervisor and closes it only after the
+ * supervisor has gone, so one running when inspected where no service answers
+ * after is no service's. That one refuses every start beside it, and is never
+ * removed by force. One whose service answers what this copy cannot read is
+ * that service's, and is warned of, never named for removal.
  *
- * @param {ChatDoctorRead} read
- * @returns {Promise<DoctorFinding>}
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {string} socket
+ * @returns {Promise<{finding: DoctorFinding, service: ChatDoctorService}>}
  */
-async function chatSupervisorFinding(read) {
-  const check = "supervisor container";
-  const name = chatSupervisorName(read.credentials);
-  const inspected = await read.engine.exec(inspectArgv([name]));
+async function chatSupervisorFinding(engine, credentials, socket) {
+  const name = chatSupervisorName(credentials);
+  const inspected = await engine.exec(inspectArgv([name]));
+  const service = await chatServiceAsked(socket);
+  return {
+    finding: {
+      check: "supervisor container",
+      ...chatSupervisorSaid(name, inspected, service),
+    },
+    service,
+  };
+}
+
+/**
+ * What the doctor says of the supervisor's container given docker's
+ * inspection of it and what the service said after.
+ *
+ * @param {string} name
+ * @param {EngineAnswer} inspected
+ * @param {ChatDoctorService} service
+ * @returns {Omit<DoctorFinding, "check">}
+ */
+function chatSupervisorSaid(name, inspected, service) {
   if (inspected.code !== 0)
     return engineFailure(inspected) === "NoSuchContainer"
-      ? { check, passed: true, detail: `none named ${name}; a run starts it` }
-      : { check, passed: false, detail: engineFailureLine(inspected) };
+      ? { passed: true, detail: `none named ${name}; a run starts it` }
+      : { passed: false, detail: engineFailureLine(inspected) };
   const state = chatContainerState(inspected.stdout);
   if (state === undefined)
     return {
-      check,
       passed: false,
       detail: `docker said nothing this copy reads of ${name}'s state`,
     };
-  const { service } = read;
   if (chatRemovableStates.includes(state))
     return {
-      check,
       passed: true,
       detail: `${name} is ${state}, and a run removes it`,
     };
   if ("status" in service)
     return {
-      check,
       passed: true,
       detail: `${name} is ${state}, the running service's`,
     };
   if ("unreadable" in service)
     return {
-      check,
       passed: true,
       warning: true,
       detail: `${name} is ${state}, the running service's, which answers what this copy cannot read: ${service.unreadable}`,
     };
   return {
-    check,
     passed: false,
     detail: `${name} is ${state}, and no service of this host answers, so no supervisor starts beside it; remove it with docker rm -f ${name}`,
   };
@@ -444,16 +463,21 @@ async function chatEngineChecked(input, credentials, found, findings) {
   if (machine === undefined) return;
   await networkChecked(engine, found.config.network, findings, "network");
   const runtime = poolRuntimeDirectory(input.paths, credentials);
+  const { finding, service } = await chatSupervisorFinding(
+    engine,
+    credentials,
+    poolSocket(runtime),
+  );
+  findings.push(finding);
   /** @type {ChatDoctorRead} */
   const read = {
     credentials,
     ...found,
     engine,
     runtime,
-    service: await chatServiceAsked(poolSocket(runtime)),
+    service,
     token: undefined,
   };
-  findings.push(await chatSupervisorFinding(read));
   findings.push(chatMemoryFinding(found.settings, machine.size.memoryMib));
   read.token = await poolTokenChecked(
     input.parts.tokens(credentials),

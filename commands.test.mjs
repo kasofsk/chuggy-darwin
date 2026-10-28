@@ -1426,7 +1426,7 @@ test("a chat host's agent is named for its file as a pool's is and runs `run`, a
   assert.equal(
     again.out,
     [
-      `replaced ${file}; its agent runs the registration it read when it started until it is restarted:`,
+      `replaced ${file}; chuggy denies the earlier registration, so its agent stops until it is restarted:`,
       `  launchctl kickstart -k gui/${String(process.getuid?.())}/${label}`,
     ].join("\n"),
   );
@@ -1576,13 +1576,14 @@ function probeAsserted(state, tokenFile) {
     (call) => call.argv[0] === "run" && call.argv.includes("-e"),
   );
   assert.ok(probe !== undefined);
-  assert.deepEqual(
-    probe.argv.slice(
-      probe.argv.indexOf("--network"),
-      probe.argv.indexOf("--network") + 2,
-    ),
+  for (const [flag, value] of [
     ["--network", "none"],
-  );
+    ["--user", "0:0"],
+  ])
+    assert.deepEqual(
+      probe.argv.slice(probe.argv.indexOf(flag), probe.argv.indexOf(flag) + 2),
+      [flag, value],
+    );
   assert.ok(!probe.argv.some((arg) => arg.startsWith("type=volume")));
   assert.deepEqual(
     probe.argv.filter((arg, index) =>
@@ -1708,12 +1709,14 @@ test("doctor of a chat host fails a running supervisor no service of the host an
 });
 
 /**
- * A chat host whose supervisor's container runs, its doctor asked.
+ * A chat host whose supervisor's container runs, its doctor asked, each
+ * inspection of that container written to `order`.
  *
  * @param {import("node:test").TestContext} t
  * @param {(t: import("node:test").TestContext, socket: string) => Promise<unknown>} serve what answers at the host's door
+ * @param {string[]} [order]
  */
-async function runningDoctored(t, serve) {
+async function runningDoctored(t, serve, order = []) {
   const { home, poolFile, paths } = await chatFixture(t);
   await serve(
     t,
@@ -1732,7 +1735,13 @@ async function runningDoctored(t, serve) {
   });
   const doctored = await called(["doctor", "--pool", poolFile], {
     home,
-    engine,
+    engine: {
+      ...engine,
+      exec: (argv, call) => {
+        if (argv[1] === "inspect" && argv.includes(name)) order.push("inspect");
+        return engine.exec(argv, call);
+      },
+    },
     fetch,
     tokens: issuedTokens,
   });
@@ -1758,6 +1767,24 @@ test("doctor of a chat host passes a running supervisor its running service answ
     ),
   );
   assert.ok(!`${out}${err}`.includes("rm -f"));
+});
+
+test("doctor of a chat host inspects the supervisor's container before it asks the service, so one running that no service answers for after is no service's", async (t) => {
+  /** @type {string[]} */
+  const order = [];
+  const { status, err } = await runningDoctored(
+    t,
+    (t, socket) =>
+      chatServed(
+        t,
+        socket,
+        { named: namedImage, supervisor: "Ready", starting: false },
+        () => order.push("ask"),
+      ),
+    order,
+  );
+  assert.equal(status, 0, err);
+  assert.deepEqual(order, ["inspect", "ask"]);
 });
 
 test("doctor of a chat host whose service answers what it cannot read takes the running supervisor as that service's, never naming its removal, and polls nothing", async (t) => {

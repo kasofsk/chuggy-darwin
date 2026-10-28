@@ -37,7 +37,12 @@ import {
   vmPlatformsFound,
 } from "./runner.mjs";
 import { updatedExitStatus } from "./launchAgent.mjs";
-import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import {
+  chatFixture,
+  fixturePool,
+  ownerOnly,
+  runnerFixture,
+} from "./runner.fixture.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 const ownUid = process.getuid?.() ?? -1;
@@ -53,6 +58,13 @@ const assignment = (asks = {}) => ({
   callbackUrl: "https://chuggy.example/worker",
   bearer: "attempt-bearer",
   ...asks,
+});
+
+test("a run's setup refuses a chat host's file, which is no pool's", async (t) => {
+  const { home, poolFile } = await chatFixture(t);
+  await assert.rejects(runnerSetup(poolFile, home), {
+    message: `${poolFile} is a chat host's, not a pool's`,
+  });
 });
 
 test("a job is sized against the VM docker runs it in, not the Mac", async (t) => {

@@ -47,17 +47,23 @@ export async function controlServed(t, socket, inFlight = [inFlightFixture]) {
 
 /**
  * A chat host's service answering on a control socket: its door says
- * `status` of the host.
+ * `status` of the host, calling `asked` each time it is asked.
  *
  * @param {import("node:test").TestContext} t
  * @param {string} socket
  * @param {import("@chuggy/worker-core/chatHost.mjs").ChatHostStatus} status
+ * @param {() => void} [asked]
  */
-export async function chatServed(t, socket, status) {
+export async function chatServed(t, socket, status, asked = () => {}) {
   await mkdir(dirname(socket), { recursive: true, mode: 0o700 });
   const host =
     /** @type {import("@chuggy/worker-core/chatHost.mjs").ChatHost} */ (
-      /** @type {unknown} */ ({ status: () => status })
+      /** @type {unknown} */ ({
+        status: () => {
+          asked();
+          return status;
+        },
+      })
     );
   const server = await controlServer(socket, chatHostControl(host));
   t.after(() => server.close());

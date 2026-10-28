@@ -506,9 +506,11 @@ async function registerFiled(host, request) {
   );
   if (agent !== undefined && launchAgentPoolFile(agent) === file) {
     host.out(
-      poolIdentityPersonal(pool) || poolIdentityChatHost(pool)
+      poolIdentityPersonal(pool)
         ? `${verb} ${file}; its agent runs the registration it read when it started until it is restarted:`
-        : `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
+        : poolIdentityChatHost(pool)
+          ? `${verb} ${file}; chuggy denies the earlier registration, so its agent stops until it is restarted:`
+          : `${verb} ${file}; chuggy denies the pool's earlier registration, so its agent stops until it is restarted:`,
     );
     host.out(
       `  ${launchAgentRestart({ uid: host.uid, label, background: launchAgentBackground(agent) })}`,
