@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   chatHostMemoryBytes,
+  chatHostSettingsLine,
   chatSupervisorContainer,
   chatSupervisorNaming,
 } from "@chuggy/worker-core/chatHost.mjs";
@@ -17,7 +18,6 @@ import {
   chatCredentialRefusal,
   chatFileRefusal,
   chatHostSettings,
-  chatSettingsLine,
   chatSetup,
   chatSupervisorPlaces,
 } from "./chatRunner.mjs";
@@ -144,7 +144,7 @@ test("the credential is refused where its directory holds anything else, or it i
   );
 });
 
-test("the settings line names each bound, the memory cap, and whose image runs", async (t) => {
+test("the core's settings line says each bound and whose image runs as the runner's file sets them", async (t) => {
   const own = await chatRead(t, {
     chat: {
       sessionsMax: 3,
@@ -155,12 +155,12 @@ test("the settings line names each bound, the memory cap, and whose image runs",
     },
   });
   assert.equal(
-    chatSettingsLine(chatHostSettings(own.credentials, own.config)),
-    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor's memory is capped at 3072 MiB, idleSecs 60, outputBytesMax 1024, image mine:1, pulled never",
+    chatHostSettingsLine(chatHostSettings(own.credentials, own.config)),
+    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 60, outputBytesMax 1024, image mine:1, pulled never",
   );
   const { credentials, config } = await chatRead(t);
   assert.match(
-    chatSettingsLine(chatHostSettings(credentials, config)),
+    chatHostSettingsLine(chatHostSettings(credentials, config)),
     /, image the one chuggy names$/u,
   );
 });

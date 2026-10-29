@@ -19,10 +19,12 @@ import { parseArgs } from "node:util";
 
 import {
   chatHostControl,
+  chatHostSettingsLine,
   chatHostStatusAsked,
+  chatHostStatusLines,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
-import { poolLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import { listLinesArgv } from "@chuggy/worker-core/engineArgv.mjs";
 import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
@@ -51,7 +53,6 @@ import {
   chatCredentialRefusal,
   chatHostParts,
   chatHostSettings,
-  chatSettingsLine,
   chatSetup,
 } from "./chatRunner.mjs";
 import { colimaCli } from "./colimaVm.mjs";
@@ -662,44 +663,23 @@ async function chatStatus(call) {
   const socket = poolSocket(
     poolRuntimeDirectory(setup.paths, setup.credentials),
   );
-  const served = await chatHostStatusAsked(socket);
-  call.host.out(
-    served === undefined ? "service: not running" : "service: running",
+  const [service, ...served] = chatHostStatusLines(
+    await chatHostStatusAsked(socket),
   );
+  call.host.out(service);
   call.host.out(
-    `settings: ${chatSettingsLine(chatHostSettings(setup.credentials, setup.config))}`,
+    `settings: ${chatHostSettingsLine(chatHostSettings(setup.credentials, setup.config))}`,
   );
-  if (served !== undefined) {
-    call.host.out(
-      `supervisor: ${served.supervisor.toLowerCase()}${served.starting ? ", starting another" : ""}, running ${served.used ?? "no image yet"}`,
-    );
-    call.host.out(
-      `image: chuggy names ${served.named ?? "none yet"}${served.own === undefined ? "" : `, and the host runs its own, ${served.own.image}`}`,
-    );
-  }
+  for (const line of served) call.host.out(line);
   const engine = call.host.engine ?? runnerEngine();
-  const listed = await engine.exec(chatContainersArgv(setup.credentials));
+  const listed = await engine.exec(
+    listLinesArgv(poolLabelValue(setup.credentials)),
+  );
   if (listed.code !== 0)
     throw new Error(`docker could not be asked: ${engineFailureLine(listed)}`);
   for (const line of listed.stdout.split("\n").filter((row) => row !== ""))
     call.host.out(line);
   return 0;
-}
-
-/**
- * The chat host's supervisor's container, running or not, a line each.
- *
- * @param {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} credentials
- */
-function chatContainersArgv(credentials) {
-  return [
-    "ps",
-    "--all",
-    "--filter",
-    `label=${poolLabel}=${poolLabelValue(credentials)}`,
-    "--format",
-    "{{.Names}}  {{.Status}}  {{.Image}}",
-  ];
 }
 
 /**

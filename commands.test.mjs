@@ -1529,7 +1529,7 @@ test("status of a chat host names the settings, what the service says of its sup
     stopped.out,
     [
       "service: not running",
-      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor's memory is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
@@ -1554,7 +1554,7 @@ test("status of a chat host names the settings, what the service says of its sup
   });
   assert.equal(served.status, 0, served.err);
   assert.deepEqual(served.out.split("\n").slice(2), [
-    "supervisor: ready, starting another, running registry.chuggy.example/worker@sha256:1",
+    "supervisor: ready in registry.chuggy.example/worker@sha256:1; a start is under way",
     "image: chuggy names registry.chuggy.example/worker@sha256:2",
   ]);
   assert.equal(served.out.split("\n")[0], "service: running");
@@ -1876,7 +1876,7 @@ test("doctor of a chat host fails a host's own image it may never pull and that 
   assert.equal(status, 1);
   assert.match(
     err,
-    /^FAIL {2}image pulled: mine:1 is not here, and chat\.image pulls it never$/mu,
+    /^FAIL {2}image pulled: mine:1 is not here, and the host's setting pulls it never$/mu,
   );
   assert.ok(!state.calls.some((call) => call.argv[0] === "run"));
 });
