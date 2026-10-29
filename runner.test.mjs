@@ -736,6 +736,8 @@ test("docker's machine is its VM's size, CPUs and architecture, named as Node na
     arch: "arm64",
     name: "colima",
   });
+  state.machine = { ...state.machine, cpus: 6 };
+  assert.equal((await dockerMachine(engine)).cpus, 6);
   state.machine = { ...state.machine, architecture: "x86_64" };
   assert.equal((await dockerMachine(engine)).arch, "x64");
   state.machine = { ...state.machine, architecture: "riscv64" };

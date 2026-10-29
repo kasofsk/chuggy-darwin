@@ -62,6 +62,10 @@ test("a report's load is the VM's /proc/loadavg's first figure, read past what a
     loadavgFacts(`Welcome to Ubuntu 24.04\n12.75 3.10 1.00 9/301 77\n`),
     { loadAverageOneMinute: 12.75 },
   );
+  assert.deepEqual(
+    loadavgFacts(`3.14 kernel, 2 updates\n0.75 0.50 0.25 1/90 12\n`),
+    { loadAverageOneMinute: 0.75 },
+  );
   assert.deepEqual(loadavgFacts(""), {});
   assert.deepEqual(loadavgFacts("high 0.25 0.12 2/180 4242\n"), {});
   assert.deepEqual(loadavgFacts("MemTotal:        2097152 kB\n"), {});

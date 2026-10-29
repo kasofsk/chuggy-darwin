@@ -1,7 +1,7 @@
 /**
  * What a runner report says of the machine its jobs run on, where the
  * runner's file sets `reportMetrics`. That machine is Colima's VM and not the
- * Mac, as it is for the size a job is held to, the disk floor and the memory
+ * Mac, as it is for a container job's size, the disk floor and the memory
  * budget: the VM's CPUs as docker counts them, its load and memory as its
  * Linux's `/proc/loadavg` and `/proc/meminfo` count them, read with `colima
  * ssh`, and, where the agent holds a disk floor, that floor and the space free
