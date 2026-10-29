@@ -116,6 +116,29 @@ test("the runner updates itself unless its file turns that off", async (t) => {
   }
 });
 
+test("the runner reports on itself only where its file turns that on", async (t) => {
+  for (const [runner, reportMetrics] of /** @type {const} */ ([
+    [{}, false],
+    [{ reportMetrics: true }, true],
+    [{ reportMetrics: false }, false],
+  ])) {
+    const { paths } = await runnerFixture(t, { runner });
+    assert.equal(
+      (await runnerConfig(paths.config)).reportMetrics,
+      reportMetrics,
+    );
+  }
+  for (const reportMetrics of ["true", 1, null]) {
+    const { paths } = await runnerFixture(t, { runner: { reportMetrics } });
+    await assert.rejects(runnerConfig(paths.config), {
+      message: new RegExp(
+        `^runner configuration ${paths.config}: reportMetrics Invalid input: expected boolean`,
+        "u",
+      ),
+    });
+  }
+});
+
 test("the runner's file is refused where anyone but its owner can read it", async (t) => {
   const { paths } = await runnerFixture(t);
   await chmod(paths.config, 0o644);
