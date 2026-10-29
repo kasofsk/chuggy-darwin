@@ -21,7 +21,6 @@ import {
   chatCredentialAloneRefusal,
   chatHost,
   chatHostConfigured,
-  chatHostMemoryBytes,
   chatHostVolumes,
   chatSupervisorNaming,
   chatSupervisorStarted,
@@ -100,26 +99,6 @@ export async function chatSetup(poolFile, home) {
     config: await runnerConfig(paths.config),
     paths,
   };
-}
-
-/** How the image's setting has it pulled, as a person says it. */
-const chatPulls = {
-  always: "always",
-  missing: "where it is missing",
-  never: "never",
-};
-
-/**
- * What the runner's file sets a chat host, as `status` and `doctor` say it.
- *
- * @param {Omit<ChatHostSettings, "places">} settings
- */
-export function chatSettingsLine(settings) {
-  const named =
-    settings.image === undefined
-      ? "the one chuggy names"
-      : `${settings.image.image}, pulled ${chatPulls[settings.image.pull]}`;
-  return `sessionsMax ${String(settings.sessionsMax)}, sessionMemoryMib ${String(settings.sessionMemoryBytes / 2 ** 20)}, so the supervisor's memory is capped at ${String(chatHostMemoryBytes(settings) / 2 ** 20)} MiB, idleSecs ${String(settings.idleSecs)}, outputBytesMax ${String(settings.outputBytesMax)}, image ${named}`;
 }
 
 /**

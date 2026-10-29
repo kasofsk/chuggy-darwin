@@ -66,6 +66,7 @@ import {
   runnerCodexAgent,
   runnerConfig,
   runnerConfigLimits,
+  runnerPoolLimitsRefusal,
   runnerPoolName,
 } from "./runnerConfig.mjs";
 
@@ -619,14 +620,15 @@ export async function agentFinding(input) {
 }
 
 /**
- * The runner's file, read, and the limits it sets this pool's service, warned
- * of where an entry in `pools` names no pool file in the pools directory, so
- * that it limits no service.
+ * The runner's file, read, and the limits it sets this pool's service,
+ * failed where they leave it no work, and warned of where an entry in `pools`
+ * names no pool file in the pools directory, so that it limits no service.
  *
  * @param {DoctorInput} input
+ * @param {PoolCredentials | undefined} credentials
  * @param {DoctorFinding[]} findings
  */
-async function runnerConfigChecked(input, findings) {
+async function runnerConfigChecked(input, credentials, findings) {
   const check = "runner configuration";
   let config;
   try {
@@ -648,17 +650,29 @@ async function runnerConfigChecked(input, findings) {
   const unmatched = Object.keys(config.pools).filter(
     (name) => !files.has(name),
   );
+  const idle =
+    credentials === undefined
+      ? undefined
+      : runnerPoolLimitsRefusal(
+          config,
+          input.paths.config,
+          input.poolFile,
+          credentials,
+        );
   const detail = [
-    `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile)}`,
+    idle ??
+      `${input.paths.config}: ${runnerConfigLimits(config, input.poolFile, credentials)}`,
     ...unmatched.map(
       (name) =>
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
     ),
   ].join("; ");
   findings.push(
-    unmatched.length === 0
-      ? { check, passed: true, detail }
-      : { check, passed: true, warning: true, detail },
+    idle !== undefined
+      ? { check, passed: false, detail }
+      : unmatched.length === 0
+        ? { check, passed: true, detail }
+        : { check, passed: true, warning: true, detail },
   );
   return config;
 }
@@ -737,7 +751,7 @@ export async function doctorFindings(input) {
       `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
     ];
   });
-  const config = await runnerConfigChecked(input, findings);
+  const config = await runnerConfigChecked(input, credentials, findings);
   if (credentials !== undefined)
     await checked(findings, "control socket", async () => [
       true,

@@ -34,12 +34,14 @@ import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
 import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
+import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
 import { registerDeclaredSchema } from "@chuggy/worker-core/register.mjs";
 
 /**
  * @typedef {z.infer<typeof runnerConfigSchema>} RunnerConfig
  * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredential} ClaudeCredential
  * @typedef {import("@chuggy/worker-core/claudeCredential.mjs").ClaudeCredentialSetting} ClaudeCredentialSetting
+ * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
  */
 
 /** The permission bits a group or anyone else would read or write by. */
@@ -120,7 +122,11 @@ export const runnerConfigSchema = z
   .strictObject({
     /** The jobs held at once, none where it is 0, as on a runner kept for sessions. */
     concurrencyMax: nonnegativeSchema.default(1),
-    /** The sessions held beside the jobs, none where it is 0. */
+    /**
+     * The sessions a pool's service holds beside the jobs, none where it is
+     * 0. A personal runner's holds none whatever it says, since chuggy gives
+     * a personal runner no session.
+     */
     sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
     claudeTokenFile: credentialFileSchema.optional(),
@@ -326,13 +332,50 @@ export function runnerPoolName(poolFile) {
 
 /**
  * The limits a pool's service holds: those its entry in `pools` names, and
- * the file's for the rest.
+ * the file's for the rest. A personal runner's holds no session, whatever
+ * either says.
  *
  * @param {RunnerConfig} config
  * @param {string} poolFile
+ * @param {PoolIdentity} identity
  */
-export function runnerPoolLimits(config, poolFile) {
-  return runnerPoolLimitsOver(config, runnerPoolOwn(config, poolFile));
+export function runnerPoolLimits(config, poolFile, identity) {
+  const limits = runnerPoolLimitsOver(config, runnerPoolOwn(config, poolFile));
+  return poolIdentityPersonal(identity)
+    ? { ...limits, sessionsMax: 0 }
+    : limits;
+}
+
+/**
+ * Why a pool's service would take no work, or nothing. The file is refused
+ * where it leaves any pool's none, so only a personal runner's, holding no
+ * session, is refused here: one whose `concurrencyMax` is 0. Its remedy is
+ * the runner's own entry in `pools`, since the file's `concurrencyMax` would
+ * also hand jobs to a pool here kept for sessions alone, or a chat host.
+ *
+ * @param {RunnerConfig} config
+ * @param {string} configFile where `config` was read from
+ * @param {string} poolFile
+ * @param {PoolIdentity} identity
+ */
+export function runnerPoolLimitsRefusal(
+  config,
+  configFile,
+  poolFile,
+  identity,
+) {
+  const { concurrencyMax, sessionsMax } = runnerPoolLimits(
+    config,
+    poolFile,
+    identity,
+  );
+  if (concurrencyMax > 0 || sessionsMax > 0) return undefined;
+  const own = `pools.${runnerPoolName(poolFile)}.concurrencyMax`;
+  const key =
+    runnerPoolOwn(config, poolFile)?.concurrencyMax === undefined
+      ? "concurrencyMax"
+      : own;
+  return `runner configuration ${configFile}: ${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set ${own} above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`;
 }
 
 /**
@@ -359,18 +402,21 @@ function runnerPoolOwn(config, poolFile) {
 
 /**
  * How many jobs and sessions a pool's service holds at once, in the file's
- * own terms, and whether its entry in `pools` sets them.
+ * own terms, and whether its entry in `pools` sets them: a personal runner's
+ * jobs alone, since it holds no session. A pool file that could not be read
+ * is taken as a pool's.
  *
  * @param {RunnerConfig} config
  * @param {string} poolFile
+ * @param {PoolIdentity | undefined} identity
  */
-export function runnerConfigLimits(config, poolFile) {
-  const { concurrencyMax, sessionsMax } = runnerPoolLimits(config, poolFile);
-  const own =
-    runnerPoolOwn(config, poolFile) === undefined
-      ? ""
-      : `, as pools.${runnerPoolName(poolFile)} sets them`;
-  return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own}`;
+export function runnerConfigLimits(config, poolFile, identity) {
+  const own = runnerPoolOwn(config, poolFile);
+  const { concurrencyMax, sessionsMax } = runnerPoolLimitsOver(config, own);
+  const pool = `pools.${runnerPoolName(poolFile)}`;
+  if (identity !== undefined && poolIdentityPersonal(identity))
+    return `concurrencyMax ${String(concurrencyMax)}${own?.concurrencyMax === undefined ? "" : `, as ${pool} sets it`}`;
+  return `concurrencyMax ${String(concurrencyMax)}, sessionsMax ${String(sessionsMax)}${own === undefined ? "" : `, as ${pool} sets them`}`;
 }
 
 /**

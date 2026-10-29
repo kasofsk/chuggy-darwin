@@ -18,7 +18,8 @@ import {
 } from "@chuggy/worker-core/claudeCredential.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 
-import { ownerOnly, runnerFixture } from "./runner.fixture.mjs";
+import { registeredPersonalFixture } from "./register.fixture.mjs";
+import { fixturePool, ownerOnly, runnerFixture } from "./runner.fixture.mjs";
 import {
   credentialFileRefusal,
   runnerCredentialDescribed,
@@ -26,6 +27,7 @@ import {
   runnerConfig,
   runnerConfigLimits,
   runnerPoolLimits,
+  runnerPoolLimitsRefusal,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -539,8 +541,88 @@ test("a pool's entry in pools sets its own service's limits in place of the file
   ];
   for (const [name, limits, line] of cases) {
     const poolFile = `${paths.pools}/${name}.json`;
-    assert.deepEqual(runnerPoolLimits(config, poolFile), limits, name);
-    assert.equal(runnerConfigLimits(config, poolFile), line, name);
+    assert.deepEqual(
+      runnerPoolLimits(config, poolFile, fixturePool),
+      limits,
+      name,
+    );
+    assert.equal(runnerConfigLimits(config, poolFile, fixturePool), line, name);
+    assert.equal(
+      runnerPoolLimitsRefusal(config, paths.config, poolFile, fixturePool),
+      undefined,
+    );
+  }
+});
+
+test("a personal runner's service holds no session whatever the file or its entry in pools says, and its limits name its jobs alone", async (t) => {
+  const name = "newtenant.member";
+  const poolFile = `/pools/${name}.json`;
+  /** @type {[Record<string, unknown>, number, string][]} */
+  const cases = [
+    [{}, 2, "concurrencyMax 2"],
+    [{ [name]: { sessionsMax: 3 } }, 2, "concurrencyMax 2"],
+    [
+      { [name]: { concurrencyMax: 1, sessionsMax: 3 } },
+      1,
+      `concurrencyMax 1, as pools.${name} sets it`,
+    ],
+  ];
+  for (const [pools, concurrencyMax, line] of cases) {
+    const { paths } = await runnerFixture(t, {
+      runner: { concurrencyMax: 2, sessionsMax: 4, pools },
+    });
+    const config = await runnerConfig(paths.config);
+    const said = JSON.stringify(pools);
+    assert.deepEqual(
+      runnerPoolLimits(config, poolFile, registeredPersonalFixture),
+      { concurrencyMax, sessionsMax: 0 },
+      said,
+    );
+    assert.equal(
+      runnerConfigLimits(config, poolFile, registeredPersonalFixture),
+      line,
+      said,
+    );
+    assert.equal(
+      runnerPoolLimitsRefusal(
+        config,
+        paths.config,
+        poolFile,
+        registeredPersonalFixture,
+      ),
+      undefined,
+      said,
+    );
+  }
+});
+
+test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's takes sessions alone", async (t) => {
+  const name = "newtenant.member";
+  const poolFile = `/pools/${name}.json`;
+  /** @type {[Record<string, unknown>, string][]} */
+  const cases = [
+    [{ concurrencyMax: 0, sessionsMax: 2 }, "concurrencyMax"],
+    [
+      { pools: { [name]: { concurrencyMax: 0, sessionsMax: 1 } } },
+      `pools.${name}.concurrencyMax`,
+    ],
+  ];
+  for (const [runner, key] of cases) {
+    const { paths } = await runnerFixture(t, { runner });
+    const config = await runnerConfig(paths.config);
+    assert.equal(
+      runnerPoolLimitsRefusal(
+        config,
+        paths.config,
+        poolFile,
+        registeredPersonalFixture,
+      ),
+      `runner configuration ${paths.config}: ${key} is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.${name}.concurrencyMax above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`,
+    );
+    assert.equal(
+      runnerPoolLimitsRefusal(config, paths.config, poolFile, fixturePool),
+      undefined,
+    );
   }
 });
 

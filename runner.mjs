@@ -73,12 +73,14 @@ import {
   runnerCredentialDescribed,
   runnerCredentialsHanded,
   runnerPoolLimits,
+  runnerPoolLimitsRefusal,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
+ * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
  * @typedef {import("@chuggy/worker-core/containerBackend.mjs").ContainerBackend} ContainerBackend
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} PoolIdentity
@@ -105,7 +107,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {Engine} engine
  * @property {import("./colimaVm.mjs").ColimaCli} colima what reaches docker's VM, which its free disk is measured in
  * @property {ContainerBackend} backend
- * @property {WorkerPoolClient} client whose backend keeps the Mac awake while the pool holds work
+ * @property {WorkerPoolClient | undefined} client whose backend keeps the Mac awake while the pool holds work, none where `idle` says why the runner's file leaves the pool's service no work
+ * @property {string | undefined} idle why the runner's file leaves the pool's service no work, or nothing
  */
 
 /** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
@@ -532,43 +535,54 @@ export async function runnerParts(setup, host) {
     ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
   });
   const power = host.power ?? powerAssertion({ log: host.log });
-  const client = runnerClient(
+  const { client, idle } = runnerClient(
     setup,
     poweredBackend(backend, power),
     { ...host, tokens, capabilities },
     { docker: () => dockerMachine(engine), colima, diskFree },
   );
-  return { runtime, socket, engine, colima, backend, client };
+  return { runtime, socket, engine, colima, backend, client, idle };
 }
 
 /**
  * The client a run passes with over its backend, reporting on itself where
- * the runner's file sets `reportMetrics`.
+ * the runner's file sets `reportMetrics`, or why the runner's file leaves its
+ * service no work and so none is made.
  *
  * @param {RunnerSetup} setup
- * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} backend
+ * @param {WorkerPoolBackend} backend
  * @param {{tokens: WorkerPoolClient["tokens"], capabilities: string[] | undefined, fetch?: typeof globalThis.fetch, runner?: RunnerIdentity, log: (line: string) => void}} seams the token source, what each poll advertises and names, the fetch a job's or a session's plane is reached by when not the global one, and where a report's failure is said
  * @param {import("./machineFacts.mjs").VmFactPorts} vm what a report reads the VM's facts by
- * @returns {WorkerPoolClient}
+ * @returns {{client: WorkerPoolClient | undefined, idle: string | undefined}}
  */
 function runnerClient(setup, backend, seams, vm) {
-  const { credentials, config } = setup;
-  return poolRunnerClient(
+  const { credentials, config, paths, poolFile } = setup;
+  const idle = runnerPoolLimitsRefusal(
+    config,
+    paths.config,
+    poolFile,
     credentials,
-    backend,
-    runnerPoolLimits(config, setup.poolFile),
-    {
-      tokens: seams.tokens,
-      fetch: seams.fetch,
-      runner: seams.runner,
-      capabilities: seams.capabilities,
-      reports: {
-        on: config.reportMetrics,
-        log: seams.log,
-        machine: machineFacts(config, vm),
-      },
-    },
   );
+  if (idle !== undefined) return { client: undefined, idle };
+  return {
+    client: poolRunnerClient(
+      credentials,
+      backend,
+      runnerPoolLimits(config, poolFile, credentials),
+      {
+        tokens: seams.tokens,
+        fetch: seams.fetch,
+        runner: seams.runner,
+        capabilities: seams.capabilities,
+        reports: {
+          on: config.reportMetrics,
+          log: seams.log,
+          machine: machineFacts(config, vm),
+        },
+      },
+    ),
+    idle,
+  };
 }
 
 /**

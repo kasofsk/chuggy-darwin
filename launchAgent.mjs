@@ -3,7 +3,8 @@
  * pools serve from one Mac. It is named for the pool file, as
  * `chuggy-darwin.<base>` in `chuggy-darwin.<base>.plist`, and restarts the
  * runner after any exit but 0: a run exits 0 only when the plane denied the
- * pool, and no restart of it would be answered differently. A run that
+ * pool or the runner's file leaves a personal runner no work, and no restart
+ * of it would be answered differently. A run that
  * installed a release of itself exits `updatedExitStatus`, and is restarted
  * on that release.
  *

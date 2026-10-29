@@ -2,11 +2,13 @@
  * The `chuggy-darwin` commands. Each answers an exit status: 0 done, 1 failed,
  * 2 asked wrongly. `run` ends without failing only when the plane denies the
  * pool, which is done, since nothing but a new registration brings the pool
- * back, and ends `updatedExitStatus` when it installed a release of itself to
- * run again on. `once` fails on any pass that did not reconcile, a denial
- * among them. A member's chat host's file is served by the same commands,
- * the file's kind choosing which: `run` ends as a pool's does, and `once` and
- * `stop` are refused of it.
+ * back, or when the runner's file leaves a personal runner no work, which it
+ * says, since a restart is refused alike until the file changes; and ends
+ * `updatedExitStatus` when it installed a release of itself to run again on.
+ * `once` fails on any pass that did not reconcile, a denial among them, and
+ * where the file leaves the pool no work. A member's chat host's file is
+ * served by the same commands, the file's kind choosing which: `run` ends as
+ * a pool's does, and `once` and `stop` are refused of it.
  */
 
 import { constants } from "node:fs";
@@ -17,10 +19,12 @@ import { parseArgs } from "node:util";
 
 import {
   chatHostControl,
+  chatHostSettingsLine,
   chatHostStatusAsked,
+  chatHostStatusLines,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { controlAsked, controlServer } from "@chuggy/worker-core/control.mjs";
-import { poolLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import { listLinesArgv } from "@chuggy/worker-core/engineArgv.mjs";
 import { engineFailureLine } from "@chuggy/worker-core/engineErrors.mjs";
 import { localToolAskRefusal } from "@chuggy/worker-core/localTools.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
@@ -49,7 +53,6 @@ import {
   chatCredentialRefusal,
   chatHostParts,
   chatHostSettings,
-  chatSettingsLine,
   chatSetup,
 } from "./chatRunner.mjs";
 import { colimaCli } from "./colimaVm.mjs";
@@ -192,6 +195,11 @@ async function started(call, command = { polls: true }) {
  */
 async function run(call) {
   const { setup, runner } = await started(call);
+  const { client } = runner;
+  if (client === undefined) {
+    call.host.out(String(runner.idle));
+    return 0;
+  }
   const updates = runnerUpdates(
     setup,
     runnerCopy(call.host),
@@ -204,7 +212,7 @@ async function run(call) {
     scratchRemovedOnSignal(runner.runtime);
     if ((await jobNetwork(runner.engine, setup.config.network)) === "Created")
       call.host.out(`made the job network ${setup.config.network}`);
-    return await runnerLoop(runner.client, {
+    return await runnerLoop(client, {
       sleep: (ms) => delay(ms),
       log: call.host.out,
       updates,
@@ -218,6 +226,11 @@ async function run(call) {
 /** @param {CliCall} call */
 async function once(call) {
   const { setup, runner } = await started(call);
+  const { client } = runner;
+  if (client === undefined) {
+    call.host.err(String(runner.idle));
+    return 1;
+  }
   if ((await controlAsked(runner.socket, { op: "status" })) !== undefined) {
     call.host.err(
       "a chuggy-darwin service is running this pool; stop it before a pass of your own",
@@ -228,7 +241,7 @@ async function once(call) {
   await runnerLeftoversRemoved(runner.runtime);
   scratchRemovedOnSignal(runner.runtime);
   await jobNetwork(runner.engine, setup.config.network);
-  const pass = await workerPoolClientPass(runner.client);
+  const pass = await workerPoolClientPass(client);
   await runner.backend.settled();
   if (pass.passed === "Reconciled") {
     call.host.out(poolRunnerPassLine(pass));
@@ -249,7 +262,9 @@ async function status(call) {
   call.host.out(
     answered === undefined ? "service: not running" : "service: running",
   );
-  call.host.out(`limits: ${runnerConfigLimits(setup.config, setup.poolFile)}`);
+  call.host.out(
+    `limits: ${runner.idle ?? runnerConfigLimits(setup.config, setup.poolFile, setup.credentials)}`,
+  );
   const disk = await diskFloorSaid(setup.config, runner.engine, runner.colima);
   call.host.out(`disk floor: ${disk.detail}`);
   call.host.out(
@@ -648,44 +663,23 @@ async function chatStatus(call) {
   const socket = poolSocket(
     poolRuntimeDirectory(setup.paths, setup.credentials),
   );
-  const served = await chatHostStatusAsked(socket);
-  call.host.out(
-    served === undefined ? "service: not running" : "service: running",
+  const [service, ...served] = chatHostStatusLines(
+    await chatHostStatusAsked(socket),
   );
+  call.host.out(service);
   call.host.out(
-    `settings: ${chatSettingsLine(chatHostSettings(setup.credentials, setup.config))}`,
+    `settings: ${chatHostSettingsLine(chatHostSettings(setup.credentials, setup.config))}`,
   );
-  if (served !== undefined) {
-    call.host.out(
-      `supervisor: ${served.supervisor.toLowerCase()}${served.starting ? ", starting another" : ""}, running ${served.used ?? "no image yet"}`,
-    );
-    call.host.out(
-      `image: chuggy names ${served.named ?? "none yet"}${served.own === undefined ? "" : `, and the host runs its own, ${served.own.image}`}`,
-    );
-  }
+  for (const line of served) call.host.out(line);
   const engine = call.host.engine ?? runnerEngine();
-  const listed = await engine.exec(chatContainersArgv(setup.credentials));
+  const listed = await engine.exec(
+    listLinesArgv(poolLabelValue(setup.credentials)),
+  );
   if (listed.code !== 0)
     throw new Error(`docker could not be asked: ${engineFailureLine(listed)}`);
   for (const line of listed.stdout.split("\n").filter((row) => row !== ""))
     call.host.out(line);
   return 0;
-}
-
-/**
- * The chat host's supervisor's container, running or not, a line each.
- *
- * @param {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} credentials
- */
-function chatContainersArgv(credentials) {
-  return [
-    "ps",
-    "--all",
-    "--filter",
-    `label=${poolLabel}=${poolLabelValue(credentials)}`,
-    "--format",
-    "{{.Names}}  {{.Status}}  {{.Image}}",
-  ];
 }
 
 /**

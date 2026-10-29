@@ -45,6 +45,7 @@ import {
   vmPlatformsFound,
 } from "./runner.mjs";
 import { updatedExitStatus } from "./launchAgent.mjs";
+import { registeredPersonalFixture } from "./register.fixture.mjs";
 import {
   chatFixture,
   fixturePool,
@@ -73,6 +74,85 @@ test("a run's setup refuses a chat host's file, which is no pool's", async (t) =
   await assert.rejects(runnerSetup(poolFile, home), {
     message: `${poolFile} is a chat host's, not a pool's`,
   });
+});
+
+test("a personal runner's poll asks for no session whatever the runner's file or its entry in pools says, while a pool's asks for its entry's sessionsMax", async (t) => {
+  const personal = {
+    ...registeredPersonalFixture,
+    capabilities: ["Platform:Linux:Arm64"],
+  };
+  for (const [pool, wanted] of /** @type {const} */ ([
+    [personal, 0],
+    [fixturePool, 5],
+  ])) {
+    const { home, poolFile } = await runnerFixture(t, {
+      pool,
+      runner: {
+        concurrencyMax: 3,
+        sessionsMax: 4,
+        pools: { "vteng.chuggy.shame": { sessionsMax: 5 } },
+      },
+    });
+    const setup = await runnerSetup(poolFile, home);
+    const runner = await runnerParts(setup, {
+      colima: fakeColima(90).colima,
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+      tokens: {
+        acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+        invalidate: () => undefined,
+      },
+    });
+    /** @type {number[]} */
+    const asked = [];
+    const client = {
+      ...runner.client,
+      plane: {
+        ...runner.client.plane,
+        /** @type {typeof runner.client.plane.poll} */
+        poll: async (_token, _held, _wanted, sessions) => {
+          asked.push(sessions);
+          return {
+            polled: "Reconciled",
+            assignments: [],
+            sessions: [],
+            stop: [],
+          };
+        },
+      },
+    };
+    await runnerDirectories(setup.paths, runner.runtime);
+    const pass = await workerPoolClientPass(client);
+    assert.equal(pass.passed, "Reconciled", JSON.stringify(pass));
+    assert.deepEqual(asked, [wanted], pool.tenant);
+  }
+});
+
+test("a personal runner whose concurrencyMax is 0 is given no client, and says why", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    pool: {
+      ...registeredPersonalFixture,
+      capabilities: ["Platform:Linux:Arm64"],
+    },
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+  });
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine: fakeEngine().engine,
+  });
+  assert.equal(runner.client, undefined);
+  assert.match(
+    runner.idle ?? "",
+    new RegExp(
+      `^runner configuration ${paths.config.replaceAll(".", "\\.")}: concurrencyMax is 0, and a personal runner is handed no sessions`,
+      "u",
+    ),
+  );
 });
 
 test("a job is sized against the VM docker runs it in, not the Mac", async (t) => {

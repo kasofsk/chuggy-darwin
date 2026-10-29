@@ -14,6 +14,7 @@ import {
   launchAgentPlist,
 } from "./launchAgent.mjs";
 import { runnerUpdates, vmPlatform } from "./runner.mjs";
+import { registeredPersonalFixture } from "./register.fixture.mjs";
 import {
   fixtureChatHost,
   fixturePool,
@@ -139,6 +140,33 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    plane",
     ],
   );
+});
+
+test("doctor names a personal runner's jobs alone among its limits, and fails one whose concurrencyMax is 0, which holds no session", async (t) => {
+  const pool = {
+    ...registeredPersonalFixture,
+    capabilities: ["Platform:Linux:Arm64"],
+  };
+  /** @type {[Record<string, unknown>, RegExp][]} */
+  const cases = [
+    [
+      { concurrencyMax: 3, sessionsMax: 4 },
+      /^ok {4}runner configuration: .+\/runner\.json: concurrencyMax 3$/u,
+    ],
+    [
+      {
+        pools: { "vteng.chuggy.shame": { concurrencyMax: 0, sessionsMax: 1 } },
+      },
+      /^FAIL {2}runner configuration: runner configuration .+\/runner\.json: pools\.vteng\.chuggy\.shame\.concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools\.vteng\.chuggy\.shame\.concurrencyMax above 0 and load its agent again, or run your chats on a chat host \(chuggy-darwin register --chat\) and unload this agent$/u,
+    ],
+  ];
+  for (const [runner, line] of cases) {
+    const lines = await doctored(t, {}, { pool, runner });
+    assert.match(
+      lines.find((found) => found.includes("runner configuration")) ?? "",
+      line,
+    );
+  }
 });
 
 test("doctor names the limits a pool's entry in pools sets its service, and warns of each entry naming no pool file in the pools directory", async (t) => {

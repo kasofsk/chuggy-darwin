@@ -697,6 +697,38 @@ test("once the plane denies fails with why, and is refused while this pool's ser
   );
 });
 
+/**
+ * Catches a run that fails on a file leaving a personal runner no work, which
+ * launchd would restart every few seconds for as long as the file says so.
+ */
+test("run of a personal runner whose concurrencyMax is 0 says why and exits 0, once refuses it, and status prints it as the limits", async (t) => {
+  const { home, poolFile, paths } = await runnerFixture(t, {
+    pool: {
+      ...registeredPersonalFixture,
+      capabilities: ["Platform:Linux:Arm64"],
+    },
+    runner: { concurrencyMax: 0, sessionsMax: 2 },
+  });
+  const said = `runner configuration ${paths.config}: concurrencyMax is 0, and a personal runner is handed no sessions, so this one would take no work; set pools.vteng.chuggy.shame.concurrencyMax above 0 and load its agent again, or run your chats on a chat host (chuggy-darwin register --chat) and unload this agent`;
+  const { engine, state } = fakeEngine();
+  const ran = await called(["run", "--pool", poolFile], { home, engine });
+  assert.equal(ran.status, 0, ran.err);
+  assert.equal(ran.out, said);
+  assert.ok(!state.networks.has("chuggy-jobs"), "the run went no further");
+  const once = await called(["once", "--pool", poolFile], { home, engine });
+  assert.equal(once.status, 1);
+  assert.equal(once.err, said);
+  const status = await called(["status", "--pool", poolFile], {
+    home,
+    engine,
+  });
+  assert.equal(status.status, 0, status.err);
+  assert.deepEqual(status.out.split("\n").slice(0, 2), [
+    "service: not running",
+    `limits: ${said}`,
+  ]);
+});
+
 test("status and stop reach this pool's service, and status names each workload's kind and the runner's limits", async (t) => {
   const { home, poolFile, paths } = await runnerFixture(t, {
     runner: { concurrencyMax: 3, sessionsMax: 4 },
@@ -1497,7 +1529,7 @@ test("status of a chat host names the settings, what the service says of its sup
     stopped.out,
     [
       "service: not running",
-      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor's memory is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
@@ -1522,7 +1554,7 @@ test("status of a chat host names the settings, what the service says of its sup
   });
   assert.equal(served.status, 0, served.err);
   assert.deepEqual(served.out.split("\n").slice(2), [
-    "supervisor: ready, starting another, running registry.chuggy.example/worker@sha256:1",
+    "supervisor: ready in registry.chuggy.example/worker@sha256:1; a start is under way",
     "image: chuggy names registry.chuggy.example/worker@sha256:2",
   ]);
   assert.equal(served.out.split("\n")[0], "service: running");
@@ -1844,7 +1876,7 @@ test("doctor of a chat host fails a host's own image it may never pull and that 
   assert.equal(status, 1);
   assert.match(
     err,
-    /^FAIL {2}image pulled: mine:1 is not here, and chat\.image pulls it never$/mu,
+    /^FAIL {2}image pulled: mine:1 is not here, and the host's setting pulls it never$/mu,
   );
   assert.ok(!state.calls.some((call) => call.argv[0] === "run"));
 });
