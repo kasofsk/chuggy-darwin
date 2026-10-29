@@ -513,16 +513,30 @@ export function deferred() {
 }
 
 /**
+ * `/proc/meminfo`'s head and `/proc/loadavg` as a VM of 2 GiB, three quarters
+ * of it available, loaded 0.5, writes them.
+ */
+export const vmCounts = [
+  "MemTotal:        2097152 kB",
+  "MemFree:          524288 kB",
+  "MemAvailable:    1572864 kB",
+  "0.50 0.25 0.12 2/180 4242",
+]
+  .map((line) => `${line}\n`)
+  .join("");
+
+/**
  * Colima's CLI, answering a command in its default VM as that VM would: `df
  * -P -k` with `gib` GiB free under every path but those `paths` sets, in 1
- * KiB blocks, and binfmt_misc's listing and its rosetta entry, enabled
- * unless `rosetta` says otherwise. It records each path it measures.
+ * KiB blocks, binfmt_misc's listing and its rosetta entry, enabled unless
+ * `rosetta` says otherwise, and `/proc/meminfo` and `/proc/loadavg` as
+ * `counts` writes them. It records each path it measures.
  *
  * @param {number} gib
- * @param {{paths?: Record<string, number>, rosetta?: "enabled" | "disabled" | "absent"}} [vm]
+ * @param {{paths?: Record<string, number>, rosetta?: "enabled" | "disabled" | "absent", counts?: string}} [vm]
  */
 export function fakeColima(gib, vm = {}) {
-  const { paths = {}, rosetta = "enabled" } = vm;
+  const { paths = {}, rosetta = "enabled", counts = vmCounts } = vm;
   /** @type {string[]} */
   const measured = [];
   /** @type {string[][]} */
@@ -556,6 +570,8 @@ export function fakeColima(gib, vm = {}) {
           : answered(
               `${rosetta}\ninterpreter /mnt/lima-rosetta/rosetta\nflags: OCF\n`,
             );
+      if (command === "cat" && rest.join(" ") === "/proc/meminfo /proc/loadavg")
+        return answered(counts);
       if (command !== "df" || rest[0] !== "-P" || rest[1] !== "-k")
         return failed(`unknown command: ${argv.join(" ")}`);
       const rows = rest.slice(2).map((path) => {

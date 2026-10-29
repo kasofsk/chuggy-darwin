@@ -8,10 +8,18 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { workerTaskVariable } from "@chuggy/worker-contract/workerEnvironment";
-import { workerRunnerCapabilitiesHeader } from "@chuggy/worker-contract/workerPool";
+import {
+  workerContractHeader,
+  workerContractRelease,
+} from "@chuggy/worker-contract/workerContract";
+import {
+  workerRunnerCapabilitiesHeader,
+  workerRunnerReportRoute,
+} from "@chuggy/worker-contract/workerPool";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
 import { heldLabel } from "@chuggy/worker-core/engineArgv.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
+import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 
 import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
 import {
@@ -720,10 +728,11 @@ test("every pool's agent of a user starts its jobs under the one memory lock of 
   assert.deepEqual(lockedAtHold, [true, true]);
 });
 
-test("docker's machine is its VM's size and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {
+test("docker's machine is its VM's size, CPUs and architecture, named as Node names one, and refused when docker cannot be asked or answers something else", async () => {
   const { engine, state } = fakeEngine();
   assert.deepEqual(await dockerMachine(engine), {
     size: { cpuMillis: 2000, memoryMib: 2048 },
+    cpus: 2,
     arch: "arm64",
     name: "colima",
   });
@@ -742,6 +751,114 @@ test("docker's machine is its VM's size and architecture, named as Node names on
     /^Error: docker could not be asked: Cannot connect to the Docker daemon/u,
   );
 });
+
+/**
+ * A pool plane on the global fetch that takes reports, answering each poll
+ * with nothing to do under this contract's release, with the reports it took
+ * and what it calls as it takes each.
+ *
+ * @param {import("node:test").TestContext} t
+ */
+function reportingPlane(t) {
+  const plane = {
+    /** @type {Record<string, unknown>[]} */
+    reports: [],
+    /** @type {() => void} */
+    reported: () => undefined,
+  };
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {string} */ url, /** @type {RequestInit} */ init) => {
+      if (!String(url).endsWith(workerRunnerReportRoute))
+        return globalThis.Response.json(
+          { assignments: [], sessions: [], stop: [] },
+          { headers: { [workerContractHeader]: workerContractRelease } },
+        );
+      plane.reports.push(JSON.parse(String(init.body)));
+      plane.reported();
+      return new globalThis.Response(null, { status: 204 });
+    },
+  );
+  return plane;
+}
+
+/**
+ * A pool's run from the runner's file `runner`, on docker in Colima's VM with
+ * 30 GiB free, whose reports end with the case.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {Record<string, unknown>} runner
+ */
+async function reportingRun(t, runner) {
+  const { home, poolFile } = await runnerFixture(t, { runner });
+  const parts = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(30).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine: fakeEngine().engine,
+    tokens: {
+      acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+      invalidate: () => undefined,
+    },
+    power: unpowered,
+  });
+  const client =
+    /** @type {import("@chuggy/worker-core/poolRunner.mjs").PoolRunnerClient} */ (
+      parts.client
+    );
+  t.after(() => client.reporting?.ended());
+  return { client, backend: parts.backend };
+}
+
+/**
+ * Catches a runner that reports where its owner has not opted in, and one
+ * whose file's key never reaches the core or whose report names none of
+ * Colima's VM.
+ */
+test(
+  "a run reports on itself to a plane that takes reports only where its file sets reportMetrics, naming Colima's VM",
+  { timeout: 30_000 },
+  async (t) => {
+    const plane = reportingPlane(t);
+    for (const runner of [{}, { reportMetrics: false }]) {
+      const { client, backend } = await reportingRun(t, runner);
+      assert.equal((await workerPoolClientPass(client)).passed, "Reconciled");
+      await backend.settled();
+      assert.equal(client.reporting, undefined, JSON.stringify(runner));
+      assert.deepEqual(plane.reports, [], JSON.stringify(runner));
+    }
+    const { client } = await reportingRun(t, { reportMetrics: true });
+    const sent = new Promise((resolve) => {
+      plane.reported = () => resolve(undefined);
+    });
+    assert.equal((await workerPoolClientPass(client)).passed, "Reconciled");
+    await sent;
+    assert.equal(plane.reports.length, 1);
+    const [report] = plane.reports;
+    assert.deepEqual(
+      {
+        cpus: report.cpus,
+        loadAverageOneMinute: report.loadAverageOneMinute,
+        memoryTotalBytes: report.memoryTotalBytes,
+        memoryAvailableBytes: report.memoryAvailableBytes,
+        diskFreeBytes: report.diskFreeBytes,
+        diskFloorBytes: report.diskFloorBytes,
+        polls: report.polls,
+      },
+      {
+        cpus: 2,
+        loadAverageOneMinute: 0.5,
+        memoryTotalBytes: 2097152 * 1024,
+        memoryAvailableBytes: 1572864 * 1024,
+        diskFreeBytes: 30 * 2 ** 30,
+        diskFloorBytes: 20 * 2 ** 30,
+        polls: 1,
+      },
+    );
+  },
+);
 
 test("docker is refused when its context names no unix socket, or cannot be read", async () => {
   const { engine, state } = fakeEngine();

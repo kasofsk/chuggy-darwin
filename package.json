@@ -41,6 +41,7 @@
     "diskFree.mjs",
     "doctor.mjs",
     "launchAgent.mjs",
+    "machineFacts.mjs",
     "mcp.mjs",
     "memoryFree.mjs",
     "power.mjs",

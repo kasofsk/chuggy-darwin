@@ -179,6 +179,8 @@ export const runnerConfigSchema = z
     memoryReservedGib: nonnegativeSchema.max(freeGibMax).default(0),
     /** Whether a run installs the release chuggy names, or only says it is out. */
     autoUpdate: z.boolean().default(true),
+    /** Whether a run sends chuggy a report of how it and Colima's VM are doing. */
+    reportMetrics: z.boolean().default(false),
     /** A member's chat host's settings, each the core's default where absent. */
     chat: chatHostConfigSchema.optional(),
   })

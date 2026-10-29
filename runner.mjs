@@ -12,6 +12,8 @@
  * the Mac. Each poll advertises what the runner finds of the VM and its file
  * when the run starts, and names this copy, so that the plane can name the
  * release chuggy pins, which a run installs and ends to be restarted on.
+ * Where the runner's file sets `reportMetrics`, the run reports on itself and
+ * on the VM as `machineFacts.mjs` reads it.
  *
  * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
  * the runner's file names `claudeTokenFile`. The core withholds what would
@@ -62,6 +64,7 @@ import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 import { colimaCli, colimaProfile, colimaRosetta } from "./colimaVm.mjs";
 import { diskFloorBytes, vmDiskFree } from "./diskFree.mjs";
 import { updatedExitStatus } from "./launchAgent.mjs";
+import { machineFacts } from "./machineFacts.mjs";
 import { memoryFreeBytes, memoryReservedBytes } from "./memoryFree.mjs";
 import { powerAssertion, poweredBackend } from "./power.mjs";
 import {
@@ -411,10 +414,10 @@ export function runnerCapabilities(setup, vm) {
 
 /**
  * The machine docker runs containers on: its size, as a job is sized against
- * it, its architecture, as `process.arch` names one, and its name.
+ * it, its CPUs, its architecture, as `process.arch` names one, and its name.
  *
  * @param {Engine} engine
- * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, arch: string, name: string}>}
+ * @returns {Promise<{size: {cpuMillis: number, memoryMib: number}, cpus: number, arch: string, name: string}>}
  */
 export async function dockerMachine(engine) {
   const info = await engine.exec(dockerMachineArgv);
@@ -433,6 +436,7 @@ export async function dockerMachine(engine) {
       cpuMillis: parsed.cpus * 1000,
       memoryMib: Math.floor(parsed.memoryBytes / (1024 * 1024)),
     },
+    cpus: parsed.cpus,
     arch: Object.hasOwn(dockerArchitectures, parsed.architecture)
       ? dockerArchitectures[parsed.architecture]
       : parsed.architecture,
@@ -486,6 +490,7 @@ export async function runnerParts(setup, host) {
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const handed = runnerCredentialsHanded(config);
   const tokenFileRefusal = credentialFileRefused(handed, host);
+  const diskFree = () => vmDiskFree(engine, colima);
   const container = containerBackend(
     {
       engine: "docker",
@@ -518,7 +523,7 @@ export async function runnerParts(setup, host) {
       sleep: (ms, signal) => delay(ms, undefined, { signal }),
       log: host.log,
       tokenFileRefusal,
-      diskFree: () => vmDiskFree(engine, colima),
+      diskFree,
     },
   );
   const backend = runnerHostRouted(setup, container, handed, {
@@ -527,13 +532,43 @@ export async function runnerParts(setup, host) {
     ...(host.spawn === undefined ? {} : { spawn: host.spawn }),
   });
   const power = host.power ?? powerAssertion({ log: host.log });
-  const client = poolRunnerClient(
-    credentials,
+  const client = runnerClient(
+    setup,
     poweredBackend(backend, power),
-    runnerPoolLimits(config, setup.poolFile),
-    { tokens, fetch: host.fetch, runner: host.runner, capabilities },
+    { ...host, tokens, capabilities },
+    { docker: () => dockerMachine(engine), colima, diskFree },
   );
   return { runtime, socket, engine, colima, backend, client };
+}
+
+/**
+ * The client a run passes with over its backend, reporting on itself where
+ * the runner's file sets `reportMetrics`.
+ *
+ * @param {RunnerSetup} setup
+ * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} backend
+ * @param {{tokens: WorkerPoolClient["tokens"], capabilities: string[] | undefined, fetch?: typeof globalThis.fetch, runner?: RunnerIdentity, log: (line: string) => void}} seams the token source, what each poll advertises and names, the fetch a job's or a session's plane is reached by when not the global one, and where a report's failure is said
+ * @param {import("./machineFacts.mjs").VmFactPorts} vm what a report reads the VM's facts by
+ * @returns {WorkerPoolClient}
+ */
+function runnerClient(setup, backend, seams, vm) {
+  const { credentials, config } = setup;
+  return poolRunnerClient(
+    credentials,
+    backend,
+    runnerPoolLimits(config, setup.poolFile),
+    {
+      tokens: seams.tokens,
+      fetch: seams.fetch,
+      runner: seams.runner,
+      capabilities: seams.capabilities,
+      reports: {
+        on: config.reportMetrics,
+        log: seams.log,
+        machine: machineFacts(config, vm),
+      },
+    },
+  );
 }
 
 /**
