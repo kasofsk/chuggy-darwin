@@ -2,7 +2,7 @@
 
 Runs a chuggy worker pool's jobs on a Mac, Apple silicon or Intel. It registers the machine as a pool and runs the pool, from a terminal or under a launchd agent that keeps it running. Jobs run as Linux containers through docker in Colima's VM, from the worker core chuggy-linux runs, and, for a pool registered with `--host`, on the Mac itself. It also runs a member's [chat host](#chat-host).
 
-It needs Node 24 or later, the docker CLI and Colima: `brew install node docker colima`, then `colima start`. On Apple silicon, install Rosetta too, `softwareupdate --install-rosetta --agree-to-license`, and start Colima with `colima start --vz-rosetta`: most work asks for amd64, which an arm64 VM takes only where it runs amd64 through Rosetta, since QEMU, which it runs amd64 through otherwise, is many times slower.
+It needs Node 24 or later, the docker CLI and Colima: `brew install node docker colima`, then `colima start`. On Apple silicon, install Rosetta too, `softwareupdate --install-rosetta --agree-to-license`, and start Colima with `colima start --vz-rosetta`: most work asks for amd64, which an arm64 VM takes only where it runs amd64 through Rosetta, since QEMU, which it runs amd64 through otherwise, is many times slower. Rosetta is still what admits that work, but an image built for `linux/arm64` too, as chuggy's current ones are, then runs natively: docker pulls the VM's own build, and a job's runtime is copied from the same platform's build of chuggy's.
 
 ## Install
 
