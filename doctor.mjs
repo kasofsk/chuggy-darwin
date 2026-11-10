@@ -219,12 +219,13 @@ async function hostAgentFound(input, config, command, runtime) {
  * Each credential of `agent`'s set the runner's file names, one finding
  * each, its file held to the rule a run holds it to and then read, as only
  * doctor reads it, and held to what a file of its type says. Each names the
- * credential's name, agent, type and settings, its file, whether it is
- * readable and its bench, as the core describes them, and never what the
- * file holds. One outside the home the VM shares fails, as does one that
- * cannot be read where its set's policy allows none that can; another that
- * cannot be read is warned of. `every` fails each one that cannot, as a chat
- * host, which is handed every one, refuses to start without it.
+ * credential's name, agent, type and settings, its file and whether it is
+ * readable, as the core describes them, and never what the file holds; its
+ * bench is the service's, which this process cannot read. One outside the
+ * home the VM shares fails, as does one that cannot be read where its set's
+ * policy allows none that can; another that cannot be read is warned of.
+ * `every` fails each one that cannot, as a chat host, which is handed every
+ * one, refuses to start without it.
  *
  * @param {DoctorInput} input
  * @param {RunnerConfig} config
@@ -264,17 +265,16 @@ async function agentCredentialFindings(input, config, agent, every) {
       credentials.find((held) => held.name === described.name)
     );
     const head = `${described.name}, ${agent} ${described.type}${agentCredentialSettingsSaid(credential)}`;
-    const bench = agentCredentialBenchSaid(described.bench);
     const refusal = refusals.get(described.name);
     if (refusal === undefined) {
       findings.push({
         check,
         passed: true,
-        detail: `${head}, the ${runnerCredentialDescribed(credential).label} ${described.file}, this runner's own and readable; ${bench}`,
+        detail: `${head}, the ${runnerCredentialDescribed(credential).label} ${described.file}, this runner's own and readable; its bench is the service's, which doctor cannot read`,
       });
       continue;
     }
-    const detail = `${head}: ${refusal}${every ? "" : policy}; ${bench}`;
+    const detail = `${head}: ${refusal}${every ? "" : policy}`;
     findings.push(
       every ||
         !readable ||
@@ -341,25 +341,6 @@ function agentCredentialSettingsSaid(credential) {
           : [String(value)],
   );
   return said.length === 0 ? "" : ` (${said.join(", ")})`;
-}
-
-/**
- * Where a credential's bench stands, as the core's describe export answers
- * it in this process, which holds no run's selector.
- *
- * @param {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredentialBenchState} bench
- */
-function agentCredentialBenchSaid(bench) {
-  switch (bench.state) {
-    case "Available":
-      return "not benched";
-    case "Benched":
-      return `benched until ${new Date(bench.until).toISOString()}`;
-    case "BenchedUntilRestart":
-      return "benched until the runner restarts";
-    default:
-      throw new TypeError("a bench state is none of a bench's");
-  }
 }
 
 /**
