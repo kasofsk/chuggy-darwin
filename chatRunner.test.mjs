@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import test from "node:test";
@@ -58,7 +59,7 @@ test("a chat host's supervisor is capped at room for each session it runs, the c
   assert.equal(argv[argv.indexOf("--memory-swap") + 1], memory);
   assert.ok(
     argv.includes(
-      `type=bind,source=${join(tokenFile, "..")},target=/var/run/chuggy/credentials/provider,readonly`,
+      `type=bind,source=${join(tokenFile, "..")},target=/var/run/chuggy/credentials/claude,readonly`,
     ),
     argv.join(" "),
   );
@@ -81,17 +82,28 @@ test("a chat host's supervisor is capped at room for each session it runs, the c
   );
 });
 
-test("the supervisor's places hand the runner's Claude credential, owned by root as the VM presents it", async (t) => {
+test("the supervisor's places hand a selector over the runner's Claude credential, owned by root as the VM presents it", async (t) => {
   const { credentials, config, tokenFile } = await chatRead(t);
-  assert.deepEqual(chatSupervisorPlaces(credentials, config), {
+  const { credentials: selector, ...places } = chatSupervisorPlaces(
+    credentials,
+    config,
+  );
+  assert.deepEqual(places, {
     volumes: {
       sessions: `chuggy-chat-${poolIdentityDigest(credentials)}-sessions`,
       mirrors: `chuggy-chat-${poolIdentityDigest(credentials)}-mirrors`,
     },
-    credentialFile: tokenFile,
     credentialOwner: { uid: 0, gid: 0 },
-    claudeCredential: { kind: "Subscription" },
   });
+  assert.deepEqual(selector?.described(), [
+    {
+      name: "claude",
+      agent: "Claude",
+      type: "OAuth",
+      file: tokenFile,
+      bench: { state: "Available" },
+    },
+  ]);
   assert.deepEqual(chatCredentialOwner, { uid: 0, gid: 0 });
   assert.throws(
     () => chatSupervisorPlaces(fixturePool, config),
@@ -162,5 +174,66 @@ test("the core's settings line says each bound and whose image runs as the runne
   assert.match(
     chatHostSettingsLine(chatHostSettings(credentials, config)),
     /, image the one chuggy names$/u,
+  );
+});
+
+/**
+ * Catches a chat host handed only one credential of its set, so a session
+ * the selector chose another for finds no file, or one started while a
+ * credential of the set is outside the home the VM shares.
+ */
+test("a chat host's supervisor is handed each Claude credential of a set, each directory bound, and is refused while any one is outside the home", async (t) => {
+  const { home } = await chatFixture(t);
+  const files = await Promise.all(
+    ["max-1", "max-2"].map((name) =>
+      ownerOnly(join(home, ".claude", name, "token"), `${name}-token`),
+    ),
+  );
+  const set = (/** @type {string[]} */ tokenFiles) => ({
+    claudeTokenFile: undefined,
+    claudeCredential: {
+      prefer: "OAuthOnly",
+      oauth: {
+        order: "RoundRobin",
+        credentials: tokenFiles.map((tokenFile, index) => ({
+          name: `max-${String(index + 1)}`,
+          tokenFile,
+        })),
+      },
+    },
+  });
+  const { credentials, config } = await chatRead(t, set(files));
+  const settings = chatHostSettings(credentials, config);
+  const { argv, environment } = chatSupervisorRunArgv(
+    "docker",
+    chatSupervisorContainer(
+      "worker",
+      settings.places,
+      chatHostMemoryBytes(settings),
+    ),
+    chatSupervisorNaming(credentials, config.network),
+  );
+  for (const [index, file] of files.entries())
+    assert.ok(
+      argv.includes(
+        `type=bind,source=${join(file, "..")},target=/var/run/chuggy/credentials/max-${String(index + 1)},readonly`,
+      ),
+      argv.join(" "),
+    );
+  assert.deepEqual(
+    JSON.parse(environment.CHUG_CHAT_CREDENTIALS ?? "[]").map(
+      (/** @type {{name: string}} */ held) => held.name,
+    ),
+    ["max-1", "max-2"],
+  );
+  const runner = { uid: process.getuid?.() ?? -1, home };
+  assert.equal(await chatCredentialRefusal(config, runner), undefined);
+  const elsewhere = await mkdtemp(join(tmpdir(), "chuggy-darwin-chat-"));
+  t.after(() => rm(elsewhere, { recursive: true, force: true }));
+  const outside = await ownerOnly(join(elsewhere, "token"), "token");
+  const refused = await chatRead(t, set([files[0], outside]));
+  assert.match(
+    (await chatCredentialRefusal(refused.config, runner)) ?? "",
+    new RegExp(`^the Claude token file ${outside} is not under `, "u"),
   );
 });

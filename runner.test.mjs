@@ -1564,3 +1564,146 @@ test("a run updates itself as the runner's file says, from this package's own re
     false,
   );
 });
+
+/**
+ * A runner's file naming two Claude subscription tokens in RoundRobin, each
+ * under the home, and both files.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {Record<string, unknown>} [pool] the pool's file, where not the fixture's
+ */
+async function roundRobinPlacing(t, pool) {
+  const fixture = await runnerFixture(t, pool === undefined ? {} : { pool });
+  const files = await Promise.all(
+    ["max-1", "max-2"].map((name) =>
+      ownerOnly(join(fixture.home, ".claude", name), `${name}-token`),
+    ),
+  );
+  await ownerOnly(
+    fixture.paths.config,
+    JSON.stringify({
+      claudeCredential: {
+        prefer: "OAuthOnly",
+        oauth: {
+          order: "RoundRobin",
+          credentials: files.map((tokenFile, index) => ({
+            name: `max-${String(index + 1)}`,
+            tokenFile,
+          })),
+        },
+      },
+      timeoutSecsMax: 3600,
+      outputBytesMax: 65536,
+    }),
+  );
+  return { ...fixture, files };
+}
+
+/** The variables an env file sets, by name. */
+const envFileVariables = (/** @type {string | undefined} */ text) =>
+  Object.fromEntries(
+    (text ?? "")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => [
+        line.slice(0, line.indexOf("=")),
+        line.slice(line.indexOf("=") + 1),
+      ]),
+  );
+
+/**
+ * Catches a run that builds a selector per job, so RoundRobin never turns,
+ * hands every job the first credential, or tells a job a name other than the
+ * one whose file it mounts; and a credential outcome the poll names that
+ * benches nothing.
+ */
+test("two jobs under RoundRobin are handed different credential files, each told its credential's name, and a credential the poll says ran out sits out the next", async (t) => {
+  const { home, poolFile, files } = await roundRobinPlacing(t);
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine,
+  });
+  for (const name of ["asg-1", "asg-2"]) {
+    const placed = await runner.backend.place(
+      { ...assignment(), assignment: name },
+      "Job",
+    );
+    assert.equal(placed.placed, "Placed", placed.evidence);
+  }
+  runner.backend.credentialOutcomesTaken?.([
+    { assignment: "asg-1", outcome: "CreditsExhausted" },
+  ]);
+  const third = await runner.backend.place(
+    { ...assignment(), assignment: "asg-3" },
+    "Job",
+  );
+  assert.equal(third.placed, "Placed", third.evidence);
+  await runner.backend.settled();
+  const handed = ["asg-1", "asg-2", "asg-3"].map((name) => {
+    const run = state.calls.find(
+      ({ argv }) =>
+        argv[0] === "run" && argv.includes(`io.chuggy.assignment=${name}`),
+    );
+    assert.ok(run !== undefined, name);
+    const file = files.find((held) => run.argv.includes(credentialMount(held)));
+    return [file, envFileVariables(run.envFile).CHUG_WORKER_CREDENTIAL_NAME];
+  });
+  assert.deepEqual(handed, [
+    [files[0], "max-1"],
+    [files[1], "max-2"],
+    [files[1], "max-2"],
+  ]);
+});
+
+/**
+ * Catches the Mac's own backend holding a selector apart from the
+ * containers', so a job on the Mac takes the credential a container's job
+ * just did.
+ */
+test("a pool registered with --host turns the one selector across its containers' jobs and the Mac's", async (t) => {
+  const { home, poolFile, files } = await roundRobinPlacing(t, hostPool);
+  /** @type {Array<Record<string, string>>} */
+  const started = [];
+  /** @type {Promise<unknown>[]} */
+  const closed = [];
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine,
+    spawn: /** @type {any} */ (
+      (
+        /** @type {string} */ _command,
+        /** @type {string[]} */ _argv,
+        /** @type {{env: Record<string, string>}} */ options,
+      ) => {
+        started.push(options.env);
+        const child = spawn(process.execPath, ["-e", ""], {
+          detached: true,
+          stdio: "ignore",
+        });
+        closed.push(once(child, "close"));
+        return child;
+      }
+    ),
+  });
+  const container = await runner.backend.place(assignment(), "Job");
+  assert.equal(container.placed, "Placed", container.evidence);
+  const mac = await runner.backend.place(
+    agentRequired("asg-mac", "Agent:Claude", "Platform:MacOS:Arm64"),
+    "Job",
+  );
+  assert.equal(mac.placed, "Placed", mac.evidence);
+  await Promise.all(closed);
+  await runner.backend.settled();
+  const run = state.calls.find(({ argv }) => argv[0] === "run");
+  assert.ok(run?.argv.includes(credentialMount(files[0])));
+  assert.equal(started.length, 1);
+  assert.equal(started[0].CHUG_WORKER_CREDENTIAL_NAME, "max-2");
+});

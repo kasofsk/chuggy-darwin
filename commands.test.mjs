@@ -1625,7 +1625,7 @@ function probeAsserted(state, tokenFile) {
   );
   assert.ok(
     probe.argv.includes(
-      `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/provider,readonly`,
+      `type=bind,source=${dirname(tokenFile)},target=/var/run/chuggy/credentials/claude,readonly`,
     ),
   );
   assert.ok(state.calls.every(({ argv }) => !argv.includes("--force")));
@@ -1633,9 +1633,15 @@ function probeAsserted(state, tokenFile) {
     probe.argv.every((arg) => !/^CHUG_[A-Z_]+=/u.test(arg)),
     "no variable's value is in the argv",
   );
-  assert.equal(
-    probe.environment.CHUG_CHAT_CREDENTIAL,
-    "/var/run/chuggy/credentials/provider/token",
+  assert.deepEqual(
+    JSON.parse(probe.environment.CHUG_CHAT_CREDENTIALS ?? "[]").map(
+      (/** @type {{file: string}} */ held) => held.file,
+    ),
+    ["/var/run/chuggy/credentials/claude/token"],
+  );
+  assert.match(
+    probe.argv[probe.argv.length - 1] ?? "",
+    /process\.env\.CHUG_CHAT_CREDENTIALS/u,
   );
 }
 

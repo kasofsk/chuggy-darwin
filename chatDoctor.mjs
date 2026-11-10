@@ -4,7 +4,7 @@
  *
  * IT PULLS THE SESSION IMAGE as a run would, by the core's own pull, since
  * whether it can be pulled is what is checked, and then runs it once, as the
- * supervisor runs but holding no capability, to read the credential as the
+ * supervisor runs but holding no capability, to read each credential as the
  * supervisor reads it. That container mounts no volume of the host's and
  * reaches no network. Its one poll is made only where no service of the host
  * answers: a held-nothing poll is what a host makes before its supervisor is
@@ -41,7 +41,7 @@ import {
 import {
   agentFinding,
   checked,
-  claudeCredentialFinding,
+  claudeCredentialFindings,
   dockerChecked,
   networkChecked,
   poolTokenChecked,
@@ -87,8 +87,8 @@ import { runnerConfig } from "./runnerConfig.mjs";
  * @typedef {{none: true} | {status: ChatHostStatus} | {unreadable: string}} ChatDoctorService no service answers at the host's door, or one answers what this copy reads, or one answers what it cannot
  */
 
-/** Run in the session image as the supervisor is, it reads the credential, and prints the owner the share presents it as. */
-const chatOwnerProbe = `const fs = require("node:fs"); const file = process.env.${chatSupervisorVariables.credential}; fs.readFileSync(file); const { uid, gid } = fs.statSync(file); console.log(uid + " " + gid);`;
+/** Run in the session image as the supervisor is, it reads each credential, and prints the owner the share presents each as. */
+const chatOwnerProbe = `const fs = require("node:fs"); for (const { file } of JSON.parse(process.env.${chatSupervisorVariables.credentials})) { fs.readFileSync(file); const { uid, gid } = fs.statSync(file); console.log(uid + " " + gid); }`;
 
 /** The node every session image runs the supervisor under. */
 const chatProbeNode = "/opt/chuggy/bin/node";
@@ -200,10 +200,10 @@ export function chatOwnerProbeRun(read, image) {
 }
 
 /**
- * Whether root, holding no capability, can read the credential through the
- * VM's share, which presents a file as owned by whoever asks of it: the
- * supervisor reads it so, as the owner it is told, root, and a credential it
- * cannot read starts no session.
+ * Whether root, holding no capability, can read each Claude credential
+ * through the VM's share, which presents a file as owned by whoever asks of
+ * it: the supervisor reads them so, as the owner it is told, root, and a
+ * credential it cannot read starts no session.
  *
  * @param {ChatDoctorRead} read
  * @param {string} image
@@ -365,13 +365,15 @@ async function chatFilesChecked(input, findings) {
     ];
   });
   if (config !== undefined) {
-    findings.push(await claudeCredentialFinding(input, config.config, false));
+    findings.push(
+      ...(await claudeCredentialFindings(input, config.config, false, true)),
+    );
     await checked(findings, "credential layout", async () => {
       const refusal = await chatCredentialRefusal(config.config, input);
       if (refusal !== undefined) throw new Error(refusal);
       return [
         true,
-        "the credential is alone in its directory, which the supervisor is handed",
+        "each Claude credential is alone in its directory, which the supervisor is handed",
       ];
     });
   }
