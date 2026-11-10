@@ -15,10 +15,12 @@
  * Where the runner's file sets `reportMetrics`, the run reports on itself and
  * on the VM as `machineFacts.mjs` reads it.
  *
- * EVERY BACKEND IS TOLD THE KIND OF CLAUDE CREDENTIAL, a subscription's where
- * the runner's file names `claudeTokenFile`. The core withholds what would
- * choose another credential only from a workload told one, so a run that told
- * none would let a variable its jobs inherit outrank the token.
+ * A RUN HOLDS ONE CREDENTIAL SELECTOR, over the sets the runner's file names,
+ * and hands it to both backends, so each job runs on the credential it
+ * chooses and is told that credential's kind and name, never its value. The
+ * core withholds what would choose another credential only from a workload
+ * told one, so a run that told none would let a variable its jobs inherit
+ * outrank the file.
  */
 
 import { Buffer } from "node:buffer";
@@ -78,6 +80,7 @@ import {
 import { runnerPaths } from "./runnerPaths.mjs";
 
 /**
+ * @typedef {import("@chuggy/worker-core/agentCredentialSet.mjs").AgentCredential} AgentCredential
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolBackend} WorkerPoolBackend
@@ -396,13 +399,14 @@ export function hostPlatform(arch) {
  *
  * @param {Pick<RunnerSetup, "credentials" | "config" | "paths">} setup
  * @param {readonly string[]} vm the platforms docker's VM runs, as `vmPlatformsFound` finds them
+ * @param {ReturnType<typeof runnerCredentialsHanded>} [handed] the run's credentials, where it holds them already
  * @returns {string[]}
  */
-export function runnerCapabilities(setup, vm) {
+export function runnerCapabilities(setup, vm, handed) {
   const { credentials, config, paths } = setup;
   const advertised = registerAdvertised({
     platforms: [...vm, ...hostPlatformsDeclared(credentials, "MacOS")],
-    files: runnerCredentialsHanded(config),
+    files: handed ?? runnerCredentialsHanded(config),
     images: config.images,
     host: credentials.host === true,
     declared: config.capabilities,
@@ -483,16 +487,17 @@ export async function runnerParts(setup, host) {
   const colima = host.colima ?? colimaCli();
   const dockerHost = await dockerEndpoint(engine);
   const machine = await dockerMachine(engine);
+  const handed = runnerCredentialsHanded(config);
   const capabilities =
     host.polls === false
       ? undefined
       : runnerCapabilities(
           setup,
           (await vmPlatformsFound(machine, colima)).platforms,
+          handed,
         );
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
-  const handed = runnerCredentialsHanded(config);
-  const tokenFileRefusal = credentialFileRefused(handed, host);
+  const tokenFileRefusal = credentialFileRefused(host);
   const diskFree = () => vmDiskFree(engine, colima);
   const container = containerBackend(
     {
@@ -586,20 +591,21 @@ function runnerClient(setup, backend, seams, vm) {
 }
 
 /**
- * Why a job cannot be handed the credential file of the agent it requires, as
- * both backends ask it.
+ * Why a job cannot be handed the file of the credential the selector chose,
+ * as both backends ask it.
  *
- * @param {ReturnType<typeof runnerCredentialsHanded>} handed
  * @param {{uid: number, home: string}} runner this process's uid and the home the VM shares
- * @returns {(file: string, agent: string) => Promise<string | undefined>}
+ * @returns {(file: string, agent: string, credential?: AgentCredential) => Promise<string | undefined>}
  */
-function credentialFileRefused(handed, runner) {
-  return (file, agent) =>
-    credentialFileRefusal(
-      runnerCredentialDescribed(handed.claudeCredential, agent),
-      file,
-      { uid: runner.uid, home: runner.home },
-    );
+function credentialFileRefused(runner) {
+  return (file, _agent, credential) => {
+    if (credential === undefined)
+      throw new Error(`the selector chose no credential for ${file}`);
+    return credentialFileRefusal(runnerCredentialDescribed(credential), file, {
+      uid: runner.uid,
+      home: runner.home,
+    });
+  };
 }
 
 /**
@@ -609,7 +615,7 @@ function credentialFileRefused(handed, runner) {
  *
  * @param {RunnerSetup} setup
  * @param {ContainerBackend} container
- * @param {ReturnType<typeof runnerCredentialsHanded>} handed
+ * @param {ReturnType<typeof runnerCredentialsHanded>} handed the run's credentials, which the container backend holds too
  * @param {import("@chuggy/worker-core/hostBackend.mjs").HostBackendSeams} seams
  * @returns {ContainerBackend}
  */

@@ -4,10 +4,12 @@
  * runs through docker in the Linux VM, its standard streams the host's
  * stream to it.
  *
- * THE CLAUDE CREDENTIAL IS THE RUNNER'S FILE'S, in a directory of its own.
- * The core binds the credential's directory, not its file, so a renewal that
- * replaces the file is seen, and the supervisor can read all that directory
- * holds: a directory holding anything else is refused.
+ * THE CLAUDE CREDENTIALS ARE THE RUNNER'S FILE'S, each in a directory of its
+ * own. The host holds one selector over the file's sets for its life, and
+ * each session runs on the Claude credential it chooses. The core binds each
+ * credential's directory, not its file, so a renewal that replaces the file
+ * is seen, and the supervisor can read all that directory holds: a directory
+ * holding anything else is refused.
  *
  * THE CREDENTIAL IS ROOT'S AS THE SUPERVISOR SEES IT. The VM's share of the
  * home presents a file as owned by the user who asks of it, whatever its
@@ -27,7 +29,7 @@ import {
   checkedChatHostSettings,
 } from "@chuggy/worker-core/chatHost.mjs";
 import { chatSessionLogs } from "@chuggy/worker-core/chatHostLog.mjs";
-import { claudeCredentialDescribed } from "@chuggy/worker-core/claudeCredential.mjs";
+import { agentCredentialSetCredentials } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityChatHost } from "@chuggy/worker-core/poolIdentity.mjs";
 import { poolRunnerTokens } from "@chuggy/worker-core/poolRunner.mjs";
@@ -42,6 +44,8 @@ import {
 import {
   credentialFileRefusal,
   runnerConfig,
+  runnerCredentialDescribed,
+  runnerCredentialSets,
   runnerCredentialsHanded,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
@@ -102,43 +106,48 @@ export async function chatSetup(poolFile, home) {
 }
 
 /**
- * Why the Claude credential's file cannot be handed to the supervisor, or
- * nothing: held to the rule a job's credential is, and to the core's, the
- * file itself alone in its directory, which the supervisor is given whole.
+ * Why the Claude credentials' files cannot be handed to the supervisor, or
+ * nothing: the first of the file's Claude set held to the rule a job's
+ * credential is, and to the core's, the file itself alone in its directory.
+ * The supervisor is given the directory of every one whole, whichever a
+ * session runs on.
  *
  * @param {RunnerConfig} config
  * @param {{uid: number, home: string}} runner
  */
 export async function chatCredentialRefusal(config, runner) {
-  const handed = runnerCredentialsHanded(config);
-  return (
-    (await credentialFileRefusal(
-      claudeCredentialDescribed(handed.claudeCredential),
-      handed.tokenFile,
-      runner,
-    )) ?? (await chatCredentialAloneRefusal(handed.tokenFile))
-  );
+  const set = runnerCredentialSets(config).Claude;
+  for (const credential of set === undefined
+    ? []
+    : agentCredentialSetCredentials(set)) {
+    const refusal =
+      (await credentialFileRefusal(
+        runnerCredentialDescribed(credential),
+        credential.file,
+        runner,
+      )) ?? (await chatCredentialAloneRefusal(credential.file));
+    if (refusal !== undefined) return refusal;
+  }
+  return undefined;
 }
 
 /**
  * What the supervisor's container is given of this Mac: the chat host's
- * volumes, the Claude credential's file, its owner as root sees it, and its
- * kind. No repositories map is named, so a session clones from its
- * repository's own address.
+ * volumes, a selector over the file's credentials, and the Claude ones'
+ * owner as root sees them. No repositories map is named, so a session clones
+ * from its repository's own address.
  *
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
  * @returns {ChatSupervisorPlaces}
  */
 export function chatSupervisorPlaces(credentials, config) {
-  const handed = runnerCredentialsHanded(config);
   if (!poolIdentityChatHost(credentials))
     throw new RangeError("a chat host's places are a chat host's alone");
   return {
     volumes: chatHostVolumes(credentials),
-    credentialFile: handed.tokenFile,
     credentialOwner: chatCredentialOwner,
-    claudeCredential: handed.claudeCredential,
+    credentials: runnerCredentialsHanded(config).credentials,
   };
 }
 

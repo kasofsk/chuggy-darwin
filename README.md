@@ -84,7 +84,7 @@ An agent reads this file when it starts, so restart it after an edit; `status` a
 - **Vertex**: the region, the Google Cloud project, and the JSON key Google Cloud made for a service account.
 - **Foundry**: the Foundry resource and one of its keys, alone. Name its deployments in `environment`, as `ANTHROPIC_DEFAULT_SONNET_MODEL` and its like.
 
-The credential is one file: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. Every job and session is told the kind, and handed the file, mounted read-only into a container or read where it is by a job on the Mac itself. A run never reads it. `doctor` alone does, printing only its kind and settings, and every secret in it is scrubbed from what a job or session reports. Claude Code is told its credential is the runner's, so a checkout's own settings choose no other provider and send the credential nowhere else. It is handed only the credential `claudeCredential` or `claudeTokenFile` names: a variable in `environment` that would choose another or where it is sent, such as `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` or, beside Bedrock, `AWS_PROFILE`, reaches the commands a job runs for the project, its checks among them, but never Claude Code or a command it runs. Every kind but Subscription is billed by its provider.
+Each credential is one file: mode 600, yours, and under your home, the only directory Colima shares with its VM by default, as named and through any link. Every job and session is told the kind, and handed the file, mounted read-only into a container or read where it is by a job on the Mac itself. A run never reads it. `doctor` alone does, printing only its kind and settings, and every secret in it is scrubbed from what a job or session reports. Claude Code is told its credential is the runner's, so a checkout's own settings choose no other provider and send the credential nowhere else. It is handed only the credential `claudeCredential` or `claudeTokenFile` names: a variable in `environment` that would choose another or where it is sent, such as `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` or, beside Bedrock, `AWS_PROFILE`, reaches the commands a job runs for the project, its checks among them, but never Claude Code or a command it runs. Every kind but Subscription is billed by its provider.
 
 The Codex credential is `codexCredential`, the `auth.json` `codex login` writes, whether you log in with ChatGPT or an API key, held to the same rules as the Claude one's file:
 
@@ -93,6 +93,26 @@ The Codex credential is `codexCredential`, the `auth.json` `codex login` writes,
 ```
 
 A job whose task requires `Agent:Codex` is handed this file in place of the Claude credential's, as that one is handed; every other job and every session is handed the Claude one. On a runner that names no `codexCredential`, a job requiring `Agent:Codex` is handed the Claude one; a job requiring two agents is refused. A job copies `auth.json` into a Codex home of its own that is thrown away, so keep the file here fresh yourself. `doctor` checks it where runner.json names it or the pool advertises `Agent:Codex`, printing none of it, and warns where no pool here advertises `Agent:Codex` for it.
+
+**Several credentials per agent.** `claudeCredential` and `codexCredential` may each name a set instead: OAuth credentials (`tokenFile`, or Codex's `authFile`) and API keys (`apiKeyFile`, a key alone), each type taken `InOrder` or `RoundRobin`, and `prefer` choosing between the types, `PreferOAuth`, `OAuthOnly` or `ApiKeyOnly`. Two Claude subscriptions in turn with a Console key behind them, and a ChatGPT login whose API key is held but never used under `OAuthOnly`:
+
+```json
+"claudeCredential": {
+  "prefer": "PreferOAuth",
+  "oauth": { "order": "RoundRobin", "credentials": [
+    { "name": "max-1", "tokenFile": "/Users/you/.config/chuggy/claude-max-1" },
+    { "name": "max-2", "tokenFile": "/Users/you/.config/chuggy/claude-max-2" } ] },
+  "apiKey": { "order": "InOrder", "credentials": [
+    { "name": "console", "apiKeyFile": "/Users/you/.config/chuggy/anthropic-api-key" } ] }
+},
+"codexCredential": {
+  "prefer": "OAuthOnly",
+  "oauth": { "order": "InOrder", "credentials": [ { "name": "chatgpt", "authFile": "/Users/you/.codex/auth.json" } ] },
+  "apiKey": { "order": "InOrder", "credentials": [ { "name": "openai", "apiKeyFile": "/Users/you/.config/chuggy/openai-api-key" } ] }
+}
+```
+
+Every form above still reads as a set of one, named `claude` or `codex`; Bedrock, Vertex and Foundry are only ever that one. A name is letters, digits, `-` and `_`, once across both agents, and each file is held to the rules above. Each pool's agent and each chat host chooses every job's and session's credential from its sets, in containers and on the Mac alike, and a run reports the credential's name, never its value. A credential that hit a usage limit sits out until the limit resets, and one out of credits until the agent restarts. `doctor` checks each credential, printing its name, agent, type, file, whether it is readable and its bench, which a run alone holds, so `doctor` always finds it not benched. It warns of one that cannot be read while its set's policy allows another that can, and fails one outside your home, and every one once the policy allows none; a chat host, handed the directory of each Claude credential, refuses to start unless every one passes.
 
 ```sh
 chuggy-darwin run --pool ~/.config/chuggy/pools/<file>  # until the plane denies the pool
@@ -167,7 +187,7 @@ The host reads runner.json's Claude credential, `network` and `autoUpdate`, and 
 - **`chat.outputBytesMax`** (runner.json's `outputBytesMax`): the most a session may write of its output.
 - **`chat.image`** (none): the host's own session image, run in place of the one chuggy names, and pulled `always`, where `missing` from the VM, or `never`. An image chuggy names is pulled where it is missing, under the host's token where it is in chuggy's registry.
 
-**The credential is handed whole, so it lives alone.** The supervisor is handed the Claude credential's directory, read-only, where root alone in its container may enter, and hands each session the credential itself. The file must be the only entry in its directory and not a link, or the host refuses to start. Colima's virtiofs share presents a file to whoever asks of it as theirs, and lets any user in the VM read it, so the supervisor, told the credential is root's, reads it as root holding no capability, and no session's user can reach it, since only root enters its directory. Another process in the VM reading the same file at that moment, such as a job handed the same credential, can make it appear briefly as that process's user; a session that starts then fails to, and the next one starts.
+**The credential is handed whole, so it lives alone.** The supervisor is handed each Claude credential's directory, read-only, where root alone in its container may enter, and hands each session the credential itself. The file must be the only entry in its directory and not a link, or the host refuses to start. Colima's virtiofs share presents a file to whoever asks of it as theirs, and lets any user in the VM read it, so the supervisor, told the credential is root's, reads it as root holding no capability, and no session's user can reach it, since only root enters its directory. Another process in the VM reading the same file at that moment, such as a job handed the same credential, can make it appear briefly as that process's user; a session that starts then fails to, and the next one starts.
 
 **The supervisor runs as root**, with docker's capabilities cut to those it needs to start a session as another user, no new privileges, and the memory cap above: it shares Colima's VM with any pool here, whose memory budget counts it, so give Colima room for both. Sessions' homes and the repositories' mirrors are kept in two docker volumes in the VM, `chuggy-chat-<digest>-sessions` and `-mirrors`, and each session's log in `~/Library/Logs/chuggy-darwin/`, a file of its own only you can read, which keeps its end once it reaches a cap. A log that cannot be written stops, and the host's log says so once. docker keeps no log of the supervisor.
 
