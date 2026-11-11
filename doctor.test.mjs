@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 
+import { workspaceVolumeLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import { keptWorkspaceKept } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { registerRequest } from "@chuggy/worker-core/register.mjs";
 
 import { doctorFindings, findingLine } from "./doctor.mjs";
@@ -32,6 +35,7 @@ const ownUid = process.getuid?.() ?? -1;
  * @property {Record<string, string>} [agentVersions] what each `claude` says its version is
  * @property {string} [installed] the directory the copy is installed in, where not Homebrew's global one
  * @property {(path: string) => Promise<boolean>} [writable] whether an update could write a path, where not every one
+ * @property {Record<string, string>} [volumes] each workspace volume in docker's VM, by name, and the size docker's `system df` prints of it
  */
 
 /** Homebrew's npm prefix, under which a global install puts this package. */
@@ -65,6 +69,10 @@ async function doctored(
     architecture: vm.architecture ?? "aarch64",
   };
   state.info = { ...state.info, Name: vm.name ?? "colima" };
+  for (const [name, size] of Object.entries(seen.volumes ?? {})) {
+    state.volumes.set(name, { [workspaceVolumeLabel]: "" });
+    state.volumeSizes.set(name, size);
+  }
   const findings = await doctorFindings({
     poolFile,
     paths,
@@ -132,6 +140,7 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    Claude credential",
       "warn  launchd agent",
       "ok    updates",
+      "ok    kept workspaces",
       "ok    docker",
       "ok    capabilities",
       "ok    job network",
@@ -216,6 +225,66 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
       "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
     ],
   );
+});
+
+test("doctor lists each workspace kept in Colima's VM and on the Mac, with its size, ticket, attempt and stage, and passes", async (t) => {
+  const keptAtMs = Date.parse("2026-11-01T12:00:00.000Z");
+  let directory = "";
+  const lines = await doctored(t, {}, {}, async ({ paths }) => {
+    directory = join(paths.jobs, "kept-job-2");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "file"), Buffer.alloc(2 ** 20));
+    await keptWorkspaceKept(
+      paths.logs,
+      "chuggy-workspace-1",
+      "it exited 1",
+      { record: { ticket: 41, attempt: "a-1", stage: 2, safe: false } },
+      keptAtMs,
+    );
+    await keptWorkspaceKept(
+      paths.logs,
+      directory,
+      "it was stopped",
+      { record: { ticket: 42, attempt: "a-2", safe: true } },
+      keptAtMs,
+    );
+    return { volumes: { "chuggy-workspace-1": "2.097152MB" } };
+  });
+  const kept = lines.find((line) => line.includes("kept workspaces")) ?? "";
+  const listed = kept.split("\n  ").slice(1);
+  assert.match(kept, /^warn {2}kept workspaces: each holds disk/u);
+  assert.deepEqual(listed, [
+    "chuggy-workspace-1  2.0 MiB  ticket 41, attempt a-1, stage 2; kept 2026-11-01T12:00:00.000Z, since it exited 1",
+    `${directory}  1.0 MiB  ticket 42, attempt a-2; kept 2026-11-01T12:00:00.000Z, since it was stopped`,
+  ]);
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith("FAIL")),
+    [],
+  );
+});
+
+test("doctor says none where its runner kept no workspace", async (t) => {
+  assert.ok((await doctored(t)).includes("ok    kept workspaces: none"));
+});
+
+test("doctor lists a workspace volume no record names, and a kept host job's directory under a pool not registered with --host", async (t) => {
+  let directory = "";
+  const lines = await doctored(t, {}, {}, async ({ paths }) => {
+    directory = join(paths.jobs, "kept-job-3");
+    await keptWorkspaceKept(
+      paths.logs,
+      directory,
+      "it exited 1",
+      { record: { ticket: 43, attempt: "a-3", safe: false } },
+      Date.parse("2026-11-01T12:00:00.000Z"),
+    );
+    return { volumes: { "chuggy-workspace-9": "1kB" } };
+  });
+  const kept = lines.find((line) => line.includes("kept workspaces")) ?? "";
+  assert.deepEqual(kept.split("\n  ").slice(1), [
+    "chuggy-workspace-9  0.0 MiB  no record of why it is kept",
+    `${directory}  size unknown  ticket 43, attempt a-3; kept 2026-11-01T12:00:00.000Z, since it exited 1`,
+  ]);
 });
 
 test("doctor warns of a disk in Colima's VM under the runner's floor, or one it cannot measure, and passes one over it", async (t) => {

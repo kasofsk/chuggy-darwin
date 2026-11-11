@@ -95,6 +95,12 @@ function fakeEngineState() {
      * @type {Map<string, Record<string, string>>}
      */
     volumes: new Map(),
+    /**
+     * What docker's `system df` prints of each named volume's size.
+     *
+     * @type {Map<string, string>}
+     */
+    volumeSizes: new Map(),
     /** @type {FakeCall[]} */
     calls: [],
     unreachable: false,
@@ -327,7 +333,8 @@ function volumed(state, argv) {
       : failed(`Error response from daemon: get ${absent}: no such volume`);
   }
   if (argv[1] === "ls") {
-    const wanted = labelFilters(argv);
+    // No container here mounts a named volume, so every one is dangling.
+    const wanted = labelFilters(argv).filter(([key]) => key !== "dangling");
     return answered(
       [...state.volumes.entries()]
         .filter(([, labels]) => labelsMatched(labels, wanted))
@@ -464,6 +471,13 @@ function answer(state, call) {
   if (verb === "network") return networked(state, last, second);
   if (verb === "volume") return volumed(state, call.argv);
   if (verb === "stats") return answered(statsPrinted(state));
+  if (verb === "system" && second === "df")
+    return answered(
+      `${JSON.stringify({
+        Containers: [],
+        Volumes: [...state.volumeSizes].map(([Name, Size]) => ({ Name, Size })),
+      })}\n`,
+    );
   return failed(`unknown command: ${call.argv.join(" ")}`);
 }
 

@@ -7,8 +7,8 @@
  *
  * Beside what a run needs, it says what a run advertises, whose platforms are
  * whichever docker's VM runs when the run starts, warning where an Apple
- * silicon Mac's VM runs no amd64 through Rosetta, and whether an agent serves
- * the pool.
+ * silicon Mac's VM runs no amd64 through Rosetta, whether an agent serves the
+ * pool, and the workspaces its runner kept.
  */
 
 import { execFile } from "node:child_process";
@@ -22,6 +22,7 @@ import {
   agentCredentialsDescribed,
 } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import { claudeCredentialRefusal } from "@chuggy/worker-core/claudeCredential.mjs";
+import { containerKeptWorkspaces } from "@chuggy/worker-core/containerBackend.mjs";
 import {
   listArgv,
   networkInspectArgv,
@@ -32,8 +33,10 @@ import {
 } from "@chuggy/worker-core/engineErrors.mjs";
 import {
   hostEnvironmentRefusal,
+  hostKeptWorkspaces,
   hostTimeoutSecsMax,
 } from "@chuggy/worker-core/hostBackend.mjs";
+import { keptWorkspaceDirectory } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { jobAgentCapability } from "@chuggy/worker-core/job.mjs";
 import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import {
@@ -840,6 +843,36 @@ export async function updatesFinding(updates) {
   };
 }
 
+/**
+ * The workspaces this Mac's runners kept, as the core lists them from the
+ * records in the log directory every pool here shares: the volumes in
+ * Colima's VM, and the job directories on the Mac a pool registered with
+ * `--host` kept. They are warned of, and pass, since only the operator
+ * removes one.
+ *
+ * @param {DoctorInput} input
+ * @returns {Promise<DoctorFinding>}
+ */
+async function keptWorkspacesFinding(input) {
+  const check = "kept workspaces";
+  const logDir = input.paths.logs;
+  const records = join(logDir, keptWorkspaceDirectory);
+  const listed = [
+    ...(await containerKeptWorkspaces("docker", input.parts.engine(), logDir)),
+    ...(await hostKeptWorkspaces(logDir)),
+  ];
+  if (listed.length === 0) return { check, passed: true, detail: "none" };
+  return {
+    check,
+    passed: true,
+    warning: true,
+    detail: [
+      `each holds disk, a volume in Colima's VM or a directory on the Mac, until you remove it with \`docker volume rm <volume>\` or \`rm -rf <directory>\` and its record from ${records}; chuggy-common's README says how to get its work out first`,
+      ...listed,
+    ].join("\n  "),
+  };
+}
+
 /** @param {DoctorFinding} finding */
 export function findingLine(finding) {
   const label =
@@ -887,6 +920,7 @@ export async function doctorFindings(input) {
   findings.push(await agentFinding(input));
   if (config !== undefined)
     findings.push(await updatesFinding(input.parts.updates(config)));
+  findings.push(await keptWorkspacesFinding(input));
   if (credentials === undefined) return findings;
   if (config !== undefined)
     await engineChecks(input, credentials, config, findings);
