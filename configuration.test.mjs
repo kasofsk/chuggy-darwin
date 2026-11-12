@@ -24,3 +24,16 @@ test("every workload lists its credentials, and none lists chuggy-github-worker,
     assert.ok(!authority.credentials.includes("chuggy-github-worker"), name);
   }
 });
+
+test("a ticket naming no finalization lands by a pull request merge under the Stacked policy", async () => {
+  const { version, finalizers, defaults } = JSON.parse(
+    await readFile(path, "utf8"),
+  ).configuration;
+
+  assert.equal(version, 3);
+  assert.deepEqual(finalizers[defaults.finalization].finalization, {
+    kind: "GitMerge",
+    mode: "PullRequestMerge",
+    policy: "Stacked",
+  });
+});

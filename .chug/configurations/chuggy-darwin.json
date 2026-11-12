@@ -2,7 +2,7 @@
   "version": 1,
   "name": "chuggy-darwin",
   "configuration": {
-    "version": 2,
+    "version": 3,
     "image": "registry.chuggy.internal/chuggy/worker@sha256:0d432c43f51470a608b0e121165f5805429611df56632939d1d19f99a437161d",
     "workloads": {
       "build": {
@@ -84,9 +84,19 @@
         }
       ]
     },
+    "finalizers": {
+      "stacked": {
+        "finalization": {
+          "kind": "GitMerge",
+          "mode": "PullRequestMerge",
+          "policy": "Stacked"
+        }
+      }
+    },
     "defaults": {
       "work": "build",
-      "evaluation": "standard"
+      "evaluation": "standard",
+      "finalization": "stacked"
     }
   }
 }
