@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.18.0/chuggy-darwin-0.18.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.19.0/chuggy-darwin-0.19.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`. `chuggy-darwin --version` names the copy installed, and a run keeps it on the release chuggy names: see [Updates](#updates).
@@ -180,12 +180,12 @@ chuggy-darwin install-agent --pool <file>
 The host reads runner.json's Claude credential, `network` and `autoUpdate`, and its own `chat` section, whose every key is optional and which refuses any other:
 
 ```json
-"chat": { "sessionsMax": 4, "sessionMemoryMib": 2048, "idleSecs": 600, "image": { "image": "ghcr.io/you/chat:1", "pull": "missing" } }
+"chat": { "sessionsMax": 4, "sessionMemoryMib": 2048, "image": { "image": "ghcr.io/you/chat:1", "pull": "missing" } }
 ```
 
 - **`chat.sessionsMax`** (4): the most sessions the host runs at once.
 - **`chat.sessionMemoryMib`** (2048): the memory the supervisor is given for each of those. The supervisor is capped at `sessionsMax` times this, swap included, so the default cap is 8 GiB.
-- **`chat.idleSecs`** (600): how long a session may sit idle before it ends, which chuggy caps.
+- **`chat.idleSecs`** (none): how long a session may sit idle before it ends, which chuggy holds it to as named rather than capping it at a window of its own. Unset, a session has no idle limit.
 - **`chat.outputBytesMax`** (runner.json's `outputBytesMax`): the most a session may write of its output.
 - **`chat.image`** (none): the host's own session image, run in place of the one chuggy names, and pulled `always`, where `missing` from the VM, or `never`. An image chuggy names is pulled where it is missing, under the host's token where it is in chuggy's registry.
 
