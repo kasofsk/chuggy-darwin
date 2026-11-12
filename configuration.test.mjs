@@ -1,8 +1,8 @@
 /**
  * The configuration in `.chug/configurations/`. A workload with no
  * `credentials` key is granted everything the deployment allows, and a listed
- * name the deployment does not grant is dropped without a report, so neither
- * shows up in any run until the worker fails an attempt over it.
+ * name the deployment does not grant is dropped without a report; nothing in
+ * a run shows either.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
