@@ -260,12 +260,35 @@ test("a pool registered with --host takes a job that pins no image and names the
   assert.ok(paths.jobs.startsWith(home));
 });
 
+/** A pool registered with the Mac's platform, Claude, and an operator's capability twice. */
+const advertisedRegistered = {
+  ...fixturePool,
+  capabilities: [
+    "Platform:Linux:Arm64",
+    "Platform:MacOS:Arm64",
+    "Agent:Claude",
+    "Tool:Xcode",
+    "Tool:Xcode",
+  ],
+};
+
+const advertisedClaudeImages = [
+  { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
+];
+
+const advertisedCodexImages = [
+  { image: "registry.example/codex", capabilities: ["Agent:Codex"] },
+];
+
+const codexCredential = { authFile: "/Users/you/.codex/auth.json" };
+
 /**
  * Catches a run advertising a platform its pool file names in place of the
- * VM's, an agent it has no image or host to run, a capability twice, or what
- * the pool was registered with beside what its own file declares.
+ * VM's, no Claude for its Claude credential, Codex with no image or host to
+ * run it, a capability twice, or what the pool was registered with beside
+ * what its own file declares.
  */
-test("a run advertises the VM's platforms, the Mac's under --host, the agents its file can run, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
+test("a run advertises the VM's platforms, the Mac's under --host, Claude for its Claude credential, Codex where an image or the host runs it, and what its file declares or else the rest of what its pool was registered with, each once", async (t) => {
   /**
    * @param {Parameters<typeof runnerFixture>[1]} documents
    * @param {string[]} vm the platforms docker's VM runs
@@ -276,31 +299,32 @@ test("a run advertises the VM's platforms, the Mac's under --host, the agents it
   };
   const arm64 = "Platform:Linux:Arm64";
   const amd64 = "Platform:Linux:Amd64";
-  const registered = {
-    ...fixturePool,
-    capabilities: [
-      "Platform:Linux:Arm64",
-      "Platform:MacOS:Arm64",
-      "Tool:Xcode",
-      "Tool:Xcode",
-      "Agent:Claude",
-    ],
-  };
-  const claudeImages = [
-    { image: "registry.example/claude", capabilities: ["Agent:Claude"] },
-  ];
+  const registered = advertisedRegistered;
+  const claudeImages = advertisedClaudeImages;
+  const codexImages = advertisedCodexImages;
   for (const [documents, vm, capabilities] of [
-    [{}, [arm64], [arm64]],
+    [{}, [arm64], [arm64, "Agent:Claude"]],
+    [{ runner: { images: codexImages } }, [arm64], [arm64, "Agent:Claude"]],
+    [{ runner: { codexCredential } }, [arm64], [arm64, "Agent:Claude"]],
+    [
+      { runner: { codexCredential, images: codexImages } },
+      [arm64],
+      [arm64, "Agent:Claude", "Agent:Codex"],
+    ],
     [
       { pool: registered, runner: { images: claudeImages } },
       [amd64],
-      [amd64, "Tool:Xcode", "Agent:Claude"],
+      [amd64, "Agent:Claude", "Tool:Xcode"],
     ],
-    [{ pool: registered }, [arm64, amd64], [arm64, amd64, "Tool:Xcode"]],
+    [
+      { pool: registered },
+      [arm64, amd64],
+      [arm64, amd64, "Tool:Xcode", "Agent:Claude"],
+    ],
     [
       { pool: { ...registered, host: true } },
       [arm64],
-      [arm64, "Platform:MacOS:Arm64", "Tool:Xcode", "Agent:Claude"],
+      [arm64, "Platform:MacOS:Arm64", "Agent:Claude", "Tool:Xcode"],
     ],
     [
       { pool: registered, runner: { images: claudeImages, capabilities: [] } },
@@ -310,21 +334,19 @@ test("a run advertises the VM's platforms, the Mac's under --host, the agents it
     [
       { pool: registered, runner: { capabilities: ["gpu"] } },
       [arm64],
-      [arm64, "gpu"],
+      [arm64, "gpu", "Agent:Claude"],
     ],
     [
       {
         pool: { ...registered, host: true },
-        runner: {
-          codexCredential: { authFile: "/Users/you/.codex/auth.json" },
-        },
+        runner: { codexCredential },
       },
       [arm64],
       [
         arm64,
         "Platform:MacOS:Arm64",
-        "Tool:Xcode",
         "Agent:Claude",
+        "Tool:Xcode",
         "Agent:Codex",
       ],
     ],
@@ -354,7 +376,7 @@ test("a run is refused on a VM no pool runs on, and where it would advertise mor
   assert.throws(
     () => runnerCapabilities(setup, ["Platform:Linux:Arm64"]),
     new Error(
-      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 65 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
+      `runner configuration ${setup.paths.config}: capabilities: this runner would advertise 66 capabilities, its platforms and agents among them, and a pool advertises at most 64`,
     ),
   );
   const host = { uid: ownUid, home, log: () => undefined };
@@ -364,7 +386,7 @@ test("a run is refused on a VM no pool runs on, and where it would advertise mor
       ...host,
       engine: fakeEngine().engine,
     }),
-    /^Error: runner configuration .*: capabilities: this runner would advertise 66 /u,
+    /^Error: runner configuration .*: capabilities: this runner would advertise 67 /u,
   );
   const { engine, state } = fakeEngine();
   state.machine = { ...state.machine, architecture: "riscv64" };
@@ -487,7 +509,10 @@ test("each poll of a run names what it advertises, and a command that never poll
     });
     await runner.client.plane.poll("pool-token", [], 0, 0);
   }
-  assert.deepEqual(named, ["Platform:Linux:Arm64,Platform:Linux:Amd64", null]);
+  assert.deepEqual(named, [
+    "Platform:Linux:Arm64,Platform:Linux:Amd64,Agent:Claude",
+    null,
+  ]);
 });
 
 test("a runner's client is given its own pool's limits from pools, and the file's where pools names another, a concurrencyMax of 0 among them", async (t) => {

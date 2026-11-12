@@ -336,7 +336,7 @@ test("doctor says what a run advertises and where it comes from, the platform of
     lines.find((line) => line.includes("capabilities:"));
   assert.match(
     advertised(await doctored(t, { architecture: "x86_64" })) ?? "",
-    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64 on each poll: docker's VM's platform, the agents .+\/runner\.json can run, and the rest of what the pool was registered with$/u,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Amd64, Agent:Claude on each poll: docker's VM's platform, the agents .+\/runner\.json can run, and the rest of what the pool was registered with$/u,
   );
   assert.match(
     advertised(
@@ -368,16 +368,16 @@ test("doctor warns where an arm64 VM runs no amd64 through Rosetta, saying how t
   for (const rosetta of /** @type {const} */ (["absent", "disabled"]))
     assert.match(
       advertised(await doctored(t, { rosetta })) ?? "",
-      /^warn {2}capabilities: a run advertises Platform:Linux:Arm64 on each poll: docker's VM's platform, .+; docker's VM runs no amd64 through Rosetta, so no job asking for Platform:Linux:Amd64 reaches this runner; install Rosetta with `softwareupdate --install-rosetta --agree-to-license`, then stop Colima and start it with `colima start --vz-rosetta`$/u,
+      /^warn {2}capabilities: a run advertises Platform:Linux:Arm64, Agent:Claude on each poll: docker's VM's platform, .+; docker's VM runs no amd64 through Rosetta, so no job asking for Platform:Linux:Amd64 reaches this runner; install Rosetta with `softwareupdate --install-rosetta --agree-to-license`, then stop Colima and start it with `colima start --vz-rosetta`$/u,
       rosetta,
     );
   assert.match(
     advertised(await doctored(t, { name: "docker-desktop" })) ?? "",
-    /^warn {2}capabilities: a run advertises Platform:Linux:Arm64 on each poll: .+; whether docker's VM runs amd64 through Rosetta could not be found, so no job asking for Platform:Linux:Amd64 reaches this runner: docker names its machine docker-desktop, which is no Colima VM$/u,
+    /^warn {2}capabilities: a run advertises Platform:Linux:Arm64, Agent:Claude on each poll: .+; whether docker's VM runs amd64 through Rosetta could not be found, so no job asking for Platform:Linux:Amd64 reaches this runner: docker names its machine docker-desktop, which is no Colima VM$/u,
   );
   assert.match(
     advertised(await doctored(t)) ?? "",
-    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64 on each poll: docker's VM's platforms, /u,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64, Agent:Claude on each poll: docker's VM's platforms, /u,
   );
 });
 

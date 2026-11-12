@@ -150,16 +150,16 @@ async function home(t, documents = {}) {
   return directory;
 }
 
-/** What chuggy answers a redemption from an Apple silicon Mac with. */
+/** What chuggy answers a redemption from an Apple silicon Mac whose runner.json holds the Claude credential with. */
 const registered = {
   ...registeredFixture,
-  capabilities: ["Platform:Linux:Arm64"],
+  capabilities: ["Platform:Linux:Arm64", "Agent:Claude"],
 };
 
-/** What chuggy answers a personal redemption from an Apple silicon Mac with. */
+/** What chuggy answers a personal redemption from an Apple silicon Mac whose runner.json holds the Claude credential with. */
 const registeredPersonal = {
   ...registeredPersonalFixture,
-  capabilities: ["Platform:Linux:Arm64"],
+  capabilities: ["Platform:Linux:Arm64", "Agent:Claude"],
 };
 
 /** The file a personal registration writes, less `.json`. */
@@ -225,7 +225,7 @@ test("register writes the pool file it redeems the token for where chuggy-linux 
   assert.equal(err, "");
   const body = JSON.parse(String(requests[0].init.body));
   assert.equal(body.pool, "shame");
-  assert.deepEqual(body.capabilities, ["Platform:Linux:Arm64"]);
+  assert.deepEqual(body.capabilities, ["Platform:Linux:Arm64", "Agent:Claude"]);
   assert.equal((await stat(pools)).mode & 0o777, 0o700);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), registered);
@@ -263,7 +263,7 @@ test("register --personal redeems a member's personal token for their runner's f
   );
   assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
     token: "registration-token-fixture",
-    capabilities: ["Platform:Linux:Arm64"],
+    capabilities: ["Platform:Linux:Arm64", "Agent:Claude"],
   });
   assert.deepEqual(
     JSON.parse(await readFile(file, "utf8")),
@@ -361,7 +361,10 @@ test("doctor names a personal runner's file as one, by its tenant and member", a
 });
 
 test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 Linux whatever the Mac is", async (t) => {
-  const { fetch, requests } = answeringFetch(201, registeredFixture);
+  const { fetch, requests } = answeringFetch(201, {
+    ...registeredFixture,
+    capabilities: ["Platform:Linux:Amd64", "Agent:Claude"],
+  });
   await called(registerArgv, {
     home: await home(t),
     architecture: "x86_64",
@@ -369,6 +372,7 @@ test("the platform registered is docker's VM's, so an x86_64 VM registers amd64 
   });
   assert.deepEqual(JSON.parse(String(requests[0].init.body)).capabilities, [
     "Platform:Linux:Amd64",
+    "Agent:Claude",
   ]);
 });
 
@@ -417,7 +421,7 @@ test("register --host declares the Mac's own platform after the VM's and writes 
   );
 });
 
-test("register declares the agents runner.json can run, Claude, and Codex where it names codexCredential, each where an images entry declares it or with --host, once beside a --capability naming it", async (t) => {
+test("register declares Claude for runner.json's Claude credential whatever its images, and Codex where it names codexCredential and an images entry declares it or with --host, each once beside a --capability naming it", async (t) => {
   const vm = "Platform:Linux:Arm64";
   const claude = { images: [{ image: "x", capabilities: ["Agent:Claude"] }] };
   const codexCredential = { authFile: "/Users/you/.codex/auth.json" };
@@ -426,9 +430,14 @@ test("register declares the agents runner.json can run, Claude, and Codex where 
     [claude, [], [vm, "Agent:Claude"]],
     [claude, ["--capability", "Agent:Claude"], [vm, "Agent:Claude"]],
     [{}, ["--host"], [vm, "Platform:MacOS:Arm64", "Agent:Claude"]],
-    [{}, [], [vm]],
-    [{ codexCredential, images: codexImages }, [], [vm, "Agent:Codex"]],
-    [{ images: codexImages }, [], [vm]],
+    [{}, [], [vm, "Agent:Claude"]],
+    [
+      { codexCredential, images: codexImages },
+      [],
+      [vm, "Agent:Claude", "Agent:Codex"],
+    ],
+    [{ images: codexImages }, [], [vm, "Agent:Claude"]],
+    [{ codexCredential }, [], [vm, "Agent:Claude"]],
     [
       { codexCredential },
       ["--host"],
@@ -1289,7 +1298,7 @@ test("doctor exits 1 on a failed check, printing every check it made", async (t)
   );
   assert.match(
     out,
-    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64 on each poll: /mu,
+    /^ok {4}capabilities: a run advertises Platform:Linux:Arm64, Platform:Linux:Amd64, Agent:Claude on each poll: /mu,
   );
   assert.match(err, /^warn {2}launchd agent: none; install-agent writes /mu);
   assert.match(err, /^FAIL {2}pool token: the pool was revoked$/mu);
