@@ -40,7 +40,7 @@ async function chatRead(t, runner = {}) {
 test("a chat host's supervisor is capped at room for each session it runs, the credential's directory bound into root's, as the core runs it on docker", async (t) => {
   const { credentials, config, tokenFile } = await chatRead(t);
   const settings = chatHostSettings(credentials, config);
-  assert.equal(settings.idleSecs, 600);
+  assert.equal(Object.hasOwn(settings, "idleSecs"), false);
   assert.equal(settings.outputBytesMax, config.outputBytesMax);
   const { argv, environment } = chatSupervisorRunArgv(
     "docker",

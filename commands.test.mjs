@@ -1529,7 +1529,7 @@ test("status of a chat host names the settings, what the service says of its sup
     stopped.out,
     [
       "service: not running",
-      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor is capped at 6144 MiB, idleSecs 600, outputBytesMax 65536, image the one chuggy names",
+      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor is capped at 6144 MiB, idleSecs none, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
@@ -1890,8 +1890,17 @@ test("doctor of a chat host fails a host's own image it may never pull and that 
 /** A session image in the chat host's registry, as the plane names one. */
 const namedImage = `registry.chuggy.example/worker@sha256:${"a".repeat(64)}`;
 
-test("doctor of a chat host polls for the image chuggy names where no service runs, naming the host's idle bound, and pulls it under the pool's token", async (t) => {
-  const { home, poolFile } = await chatFixture(t);
+test("doctor of a chat host polls for the image chuggy names where no service runs, naming the host's idle bound and none where it names none, and pulls it under the pool's token", async (t) => {
+  for (const [chat, idleSecs] of /** @type {const} */ ([
+    [{}, null],
+    [{ idleSecs: 120 }, "120"],
+  ]))
+    await doctorChatHostPolled(t, chat, idleSecs);
+});
+
+/** A doctor of a chat host whose `chat` section is `chat`, whose one poll names `idleSecs`. */
+async function doctorChatHostPolled(t, chat, idleSecs) {
+  const { home, poolFile } = await chatFixture(t, { runner: { chat } });
   const { fetch, requests } = answeringFetch(200, {
     assignments: [],
     sessions: [],
@@ -1923,11 +1932,11 @@ test("doctor of a chat host polls for the image chuggy names where no service ru
   assert.equal(requests.length, 1);
   assert.equal(
     new globalThis.URL(requests[0].url).searchParams.get("idleSecs"),
-    "600",
+    idleSecs,
   );
   const pull = state.calls.find((call) => call.argv[0] === "pull");
   assert.match(pull?.authFile ?? "", /registry\.chuggy\.example/u);
-});
+}
 
 test("doctor of a chat host takes the image chuggy named from the running service, and polls nothing", async (t) => {
   const { home, poolFile, paths } = await chatFixture(t);

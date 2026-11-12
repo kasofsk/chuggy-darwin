@@ -64,7 +64,7 @@ import { runnerConfig } from "./runnerConfig.mjs";
  * @typedef {object} ChatDoctorParts what a run would reach, built from what was read
  * @property {() => Engine} engine
  * @property {(credentials: PoolCredentials) => WorkerPoolClient["tokens"]} tokens
- * @property {(credentials: PoolCredentials, idleSecs: number) => WorkerPoolClient["plane"]} plane
+ * @property {(credentials: PoolCredentials, idleSecs: number | undefined) => WorkerPoolClient["plane"]} plane
  * @property {(config: RunnerConfig) => import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolUpdates} updates
  *
  * @typedef {object} ChatDoctorInput
