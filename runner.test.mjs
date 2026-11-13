@@ -14,6 +14,7 @@ import {
 } from "@chuggy/worker-contract/workerContract";
 import {
   workerRunnerCapabilitiesHeader,
+  workerRunnerCredentialsHeader,
   workerRunnerReportRoute,
 } from "@chuggy/worker-contract/workerPool";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
@@ -1682,6 +1683,83 @@ test("two jobs under RoundRobin are handed different credential files, each told
     [files[1], "max-2"],
     [files[1], "max-2"],
   ]);
+});
+
+/**
+ * One pass of a run's client over a plane answering `credentialPauses`, and
+ * the credentials header each of its polls named.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {{home: string, poolFile: string}} fixture
+ * @param {readonly unknown[]} credentialPauses
+ */
+async function credentialsPolled(t, { home, poolFile }, credentialPauses) {
+  /** @type {(string | null)[]} */
+  const named = [];
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    named.push(
+      new globalThis.Headers(init?.headers).get(workerRunnerCredentialsHeader),
+    );
+    return globalThis.Response.json({
+      assignments: [],
+      sessions: [],
+      stop: [],
+      credentialPauses,
+    });
+  });
+  const { engine, state } = fakeEngine();
+  const setup = await runnerSetup(poolFile, home);
+  const runner = await runnerParts(setup, {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine,
+    tokens: {
+      acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+      invalidate: () => undefined,
+    },
+  });
+  await runnerDirectories(setup.paths, runner.runtime);
+  const client =
+    /** @type {import("@chuggy/worker-core/poolRunner.mjs").PoolRunnerClient} */ (
+      runner.client
+    );
+  const pass = await workerPoolClientPass(client);
+  assert.equal(pass.passed, "Reconciled", JSON.stringify(pass));
+  t.mock.restoreAll();
+  return { named: [...new Set(named)], backend: runner.backend, state };
+}
+
+/**
+ * Catches a run whose poll names none of the credentials its file names, so
+ * chuggy holds every credential of an agent once one reaches its owner's
+ * threshold, and a pause chuggy answers that never reaches the selector a
+ * job's credential is chosen by.
+ */
+test("each poll names the credentials a job would run on now, a single file's by the core's name for it, and a credential the answer pauses is passed over", async (t) => {
+  const single = await credentialsPolled(t, await runnerFixture(t), []);
+  assert.deepEqual(single.named, ["Claude:claude"]);
+  const pausedUntil = Math.floor(Date.now() / 1_000) + 3_600;
+  const { files, ...fixture } = await roundRobinPlacing(t);
+  const set = await credentialsPolled(t, fixture, [
+    { agent: "Claude", credential: "max-1", pausedUntil },
+  ]);
+  assert.deepEqual(set.named, ["Claude:max-1,Claude:max-2"]);
+  for (const name of ["asg-1", "asg-2"]) {
+    const placed = await set.backend.place(
+      { ...assignment(), assignment: name },
+      "Job",
+    );
+    assert.equal(placed.placed, "Placed", placed.evidence);
+  }
+  await set.backend.settled();
+  const mounted = set.state.calls
+    .filter(({ argv }) => argv[0] === "run")
+    .map(({ argv }) =>
+      files.find((file) => argv.includes(credentialMount(file))),
+    );
+  assert.deepEqual(mounted, [files[1], files[1]]);
 });
 
 /**
