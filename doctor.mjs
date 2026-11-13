@@ -16,16 +16,25 @@ import { constants } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 
+import { z } from "zod";
+
 import {
   agentCredentialPreferred,
   agentCredentialSetCredentials,
   agentCredentialsDescribed,
 } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import { claudeCredentialRefusal } from "@chuggy/worker-core/claudeCredential.mjs";
-import { containerKeptWorkspaces } from "@chuggy/worker-core/containerBackend.mjs";
+import {
+  containerKeptWorkspaces,
+  ownerVolumeLabelsRefusal,
+  ownerVolumeProjectsLine,
+  ownerVolumesServed,
+} from "@chuggy/worker-core/containerBackend.mjs";
 import {
   listArgv,
   networkInspectArgv,
+  ownerVolumeDirectory,
+  volumeInspectArgv,
 } from "@chuggy/worker-core/engineArgv.mjs";
 import {
   engineFailure,
@@ -72,6 +81,7 @@ import {
   runnerConfigLimits,
   runnerPoolLimitsRefusal,
   runnerPoolName,
+  runnerVolumeOutsideRefusal,
 } from "./runnerConfig.mjs";
 
 /**
@@ -79,6 +89,7 @@ import {
  * @typedef {import("@chuggy/worker-core/poolCredentials.mjs").PoolCredentials} PoolCredentials
  * @typedef {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient} WorkerPoolClient
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
+ * @typedef {import("@chuggy/worker-core/engineArgv.mjs").OwnerVolume} OwnerVolume
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
  *
@@ -135,7 +146,11 @@ function hostJobsChecked(config) {
     throw new Error(
       `timeoutSecsMax is at most ${String(hostTimeoutSecsMax)} for a job on the Mac itself`,
     );
-  return "a job that pins no image and names the Mac's platform runs on the Mac itself, unisolated";
+  const unisolated =
+    "a job that pins no image and names the Mac's platform runs on the Mac itself, unisolated";
+  return config.volumes.length === 0
+    ? unisolated
+    : `${unisolated}, and mounts none of the volumes the runner's file lists`;
 }
 
 /** The cap on asking an agent's command its version, which guards a hung one and not a slow one. */
@@ -637,6 +652,7 @@ async function engineChecks(input, credentials, config, findings) {
   if (machine === undefined) return;
   findings.push(await capabilitiesFinding(input, credentials, config, machine));
   await networkChecked(engine, config.network, findings, "job network");
+  findings.push(await ownerVolumesFinding(input, engine, credentials, config));
   const disk = await diskFloorSaid(config, engine, input.parts.colima());
   findings.push(
     disk.warning
@@ -648,6 +664,99 @@ async function engineChecks(input, credentials, config, findings) {
         }
       : { check: "disk floor", passed: true, detail: disk.detail },
   );
+}
+
+/** What docker answers an inspection of volumes with, of each one's labels. */
+const inspectedVolumeLabelsSchema = z.array(
+  z.object({ Labels: z.record(z.string(), z.string()).nullish() }),
+);
+
+/**
+ * What a job is given of one of its owner's volumes, or a throw naming why it
+ * cannot be given it: a directory of the home the VM shares, or a named
+ * volume, there and labelled as the one listed, or for the first job to make.
+ *
+ * @param {DoctorInput} input
+ * @param {Engine} engine
+ * @param {OwnerVolume} volume
+ * @param {number} index its place in the file's `volumes`
+ */
+async function ownerVolumeFound(input, engine, volume, index) {
+  const { source, target, readonly, project } = volume;
+  const mounted = `${source} at ${target}${readonly ? ", read-only" : ""}${project === undefined ? "" : `, ${project}'s alone`}`;
+  if (ownerVolumeDirectory(source)) {
+    if (await credentialFileOutside(source, input.home))
+      throw new Error(runnerVolumeOutsideRefusal(index, source, input.home));
+    const directory = await stat(source);
+    if (!directory.isDirectory())
+      throw new Error(`${source} is not a directory`);
+    return mounted;
+  }
+  const inspected = await engine.exec(volumeInspectArgv([source]));
+  if (inspected.code === 0) {
+    let labels;
+    try {
+      const [found] = inspectedVolumeLabelsSchema.parse(
+        JSON.parse(inspected.stdout),
+      );
+      labels = found?.Labels ?? {};
+    } catch {
+      throw new Error(
+        `docker answered an inspection of ${source} doctor cannot read`,
+      );
+    }
+    const refusal = ownerVolumeLabelsRefusal(volume, labels);
+    if (refusal !== undefined) throw new Error(`${source} ${refusal}`);
+    return `${mounted}, present`;
+  }
+  if (engineFailure(inspected) === "NoSuchVolume")
+    return `${mounted}, missing until the first job started through chuggy's runtime makes it`;
+  throw new Error(`${source}: ${engineFailureLine(inspected)}`);
+}
+
+/**
+ * What each job is given of its owner's volumes. On a personal runner one
+ * scoped per project is each job's own project's, so it is named as such and
+ * not looked for: the runner serves its member across projects.
+ *
+ * @param {DoctorInput} input
+ * @param {Engine} engine
+ * @param {PoolCredentials} credentials
+ * @param {RunnerConfig} config
+ * @returns {Promise<DoctorFinding>}
+ */
+async function ownerVolumesFinding(input, engine, credentials, config) {
+  const check = "volumes";
+  const listed = config.volumes.map((volume, index) => ({
+    index,
+    volume: ownerVolumesServed([volume], credentials).served[0],
+    source: volume.source,
+  }));
+  const scoped = listed
+    .filter(({ volume }) => volume === undefined)
+    .map(({ source }) => ownerVolumeProjectsLine(source));
+  /** @type {string[]} */
+  const found = [];
+  try {
+    for (const { index, volume } of listed)
+      if (volume !== undefined)
+        found.push(await ownerVolumeFound(input, engine, volume, index));
+  } catch (failure) {
+    return {
+      check,
+      passed: false,
+      detail: [
+        failure instanceof Error ? failure.message : String(failure),
+        ...scoped,
+      ].join("; "),
+    };
+  }
+  found.push(...scoped);
+  return {
+    check,
+    passed: true,
+    detail: found.length === 0 ? "none" : found.join("; "),
+  };
 }
 
 /**

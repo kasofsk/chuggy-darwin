@@ -76,6 +76,7 @@ import {
   runnerCredentialsHanded,
   runnerPoolLimits,
   runnerPoolLimitsRefusal,
+  runnerVolumesRefusal,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -476,7 +477,7 @@ export async function dockerEndpoint(engine) {
 
 /**
  * @param {RunnerSetup} setup
- * @param {{uid: number, home: string, log: (line: string) => void, runner?: RunnerIdentity, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the copy each poll names, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise
+ * @param {{uid: number, home: string, log: (line: string) => void, runner?: RunnerIdentity, engine?: Engine, colima?: import("./colimaVm.mjs").ColimaCli, tokens?: WorkerPoolClient["tokens"], fetch?: typeof globalThis.fetch, power?: import("./power.mjs").PowerAssertion, spawn?: typeof import("node:child_process").spawn, polls?: boolean}} host this process's uid and home, where its log lines go, the copy each poll names, the engine, the CLI reaching its VM and the token source when not docker, colima and the pool's issuer, the fetch a job's or a session's plane is reached by when not the global one, the power assertion when not caffeinate, what starts a job on the Mac itself when not Node's own `spawn`, and `polls: false` for a command that never polls, which then finds nothing to advertise and, running no job, refuses no directory `volumes` lists
  * @returns {Promise<Runner>}
  */
 export async function runnerParts(setup, host) {
@@ -488,14 +489,11 @@ export async function runnerParts(setup, host) {
   const dockerHost = await dockerEndpoint(engine);
   const machine = await dockerMachine(engine);
   const handed = runnerCredentialsHanded(config);
-  const capabilities =
-    host.polls === false
-      ? undefined
-      : runnerCapabilities(
-          setup,
-          (await vmPlatformsFound(machine, colima)).platforms,
-          handed,
-        );
+  const capabilities = await runnerPartsPolling(setup, host, {
+    machine,
+    colima,
+    handed,
+  });
   const tokens = host.tokens ?? poolRunnerTokens(credentials);
   const tokenFileRefusal = credentialFileRefused(host);
   const diskFree = () => vmDiskFree(engine, colima);
@@ -515,6 +513,7 @@ export async function runnerParts(setup, host) {
       machine: machine.size,
       pullRetryMs,
       images: config.images,
+      volumes: config.volumes,
       imageRecord: join(paths.images, "docker.json"),
       imageUnusedSecsMax: config.imageUnusedSecsMax,
       memoryFreeBytesMin: memoryFreeBytes(config),
@@ -547,6 +546,27 @@ export async function runnerParts(setup, host) {
     { docker: () => dockerMachine(engine), colima, diskFree },
   );
   return { runtime, socket, engine, colima, backend, client, idle };
+}
+
+/**
+ * What a command that polls advertises, found when it starts, refused where
+ * its file lists a directory a job could not mount; nothing for a command
+ * that never polls, which runs no job.
+ *
+ * @param {RunnerSetup} setup
+ * @param {{home: string, polls?: boolean}} host the home the VM shares, and `polls: false` for a command that never polls
+ * @param {{machine: Awaited<ReturnType<typeof dockerMachine>>, colima: import("./colimaVm.mjs").ColimaCli, handed: ReturnType<typeof runnerCredentialsHanded>}} found docker's VM, the CLI reaching it and the run's credentials
+ */
+async function runnerPartsPolling(setup, host, found) {
+  if (host.polls === false) return undefined;
+  const outside = await runnerVolumesRefusal(setup.config.volumes, host.home);
+  if (outside !== undefined)
+    throw new Error(`runner configuration ${setup.paths.config}: ${outside}`);
+  return runnerCapabilities(
+    setup,
+    (await vmPlatformsFound(found.machine, found.colima)).platforms,
+    found.handed,
+  );
 }
 
 /**
