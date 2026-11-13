@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.20.0/chuggy-darwin-0.20.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.21.0/chuggy-darwin-0.21.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`. `chuggy-darwin --version` names the copy installed, and a run keeps it on the release chuggy names: see [Updates](#updates).
@@ -112,7 +112,7 @@ A job whose task requires `Agent:Codex` is handed this file in place of the Clau
 }
 ```
 
-Every form above still reads as a set of one, named `claude` or `codex`; Bedrock, Vertex and Foundry are only ever that one. A name is letters, digits, `-` and `_`, once across both agents, and each file is held to the rules above. Each pool's agent and each chat host chooses every job's and session's credential from its sets, in containers and on the Mac alike, and a run reports the credential's name, never its value. A credential that hit a usage limit sits out until the limit resets, and one out of credits until the agent restarts; what sits out is the service's, which `doctor` cannot read. `doctor` checks each credential, printing its name, agent, type, file and whether it is readable. It warns of one that cannot be read while its set's policy allows another that can, and fails one outside your home, and every one once the policy allows none; a chat host, handed the directory of each Claude credential, refuses to start unless every one passes.
+Every form above still reads as a set of one, named `claude` or `codex`; Bedrock, Vertex and Foundry are only ever that one. A name is letters, digits, `-` and `_`, once across both agents, and each file is held to the rules above. Each pool's agent and each chat host chooses every job's and session's credential from its sets, in containers and on the Mac alike, and a run reports the credential's name, never its value. A credential that hit a usage limit sits out until the limit resets, and one out of credits until the agent restarts; what sits out is the service's, which `doctor` cannot read. A credential at its owner's usage threshold on chuggy is passed over as one sitting out is: under `PreferOAuth` a set whose OAuth credentials are all at their thresholds runs on its API key, and under `OAuthOnly` its jobs wait on chuggy until one is free. chuggy keeps a credential's usage by its `name` under the account of the member who registered the runner, so give two credentials on one member's runners the same name only where they are the same credential. `doctor` checks each credential, printing its name, agent, type, file and whether it is readable. It warns of one that cannot be read while its set's policy allows another that can, and fails one outside your home, and every one once the policy allows none; a chat host, handed the directory of each Claude credential, refuses to start unless every one passes.
 
 ```sh
 chuggy-darwin run --pool ~/.config/chuggy/pools/<file>  # until the plane denies the pool
