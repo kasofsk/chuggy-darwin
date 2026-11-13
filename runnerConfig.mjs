@@ -34,8 +34,14 @@ import {
 } from "@chuggy/worker-core/agentCredentialSet.mjs";
 import { claudeCredentialDescribed } from "@chuggy/worker-core/claudeCredential.mjs";
 import { chatHostConfigSchema } from "@chuggy/worker-core/chatHost.mjs";
-import { ownerImagesSchema } from "@chuggy/worker-core/containerBackend.mjs";
-import { bindMountNameable } from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  ownerImagesSchema,
+  ownerVolumesSchema,
+} from "@chuggy/worker-core/containerBackend.mjs";
+import {
+  bindMountNameable,
+  ownerVolumeDirectory,
+} from "@chuggy/worker-core/engineArgv.mjs";
 import { imageUnusedSecsMaxDefault } from "@chuggy/worker-core/imageCleanup.mjs";
 import { reservedJobVariables } from "@chuggy/worker-core/job.mjs";
 import { poolIdentityPersonal } from "@chuggy/worker-core/poolIdentity.mjs";
@@ -202,6 +208,13 @@ export const runnerConfigSchema = z
      * `--capability` declared when its pool was registered.
      */
     capabilities: registerDeclaredSchema.optional(),
+    /**
+     * The named volumes in Colima's VM and directories of the Mac's home
+     * mounted into every job, never a session or a job on the Mac itself,
+     * each as the core's `ownerVolumesSchema` reads it. A named volume whose
+     * `scope` is "project" is one per project.
+     */
+    volumes: ownerVolumesSchema.default([]),
     /**
      * Limits of a pool's own, by its pool file's name without `.json`, as
      * `runnerPoolName` names it.
@@ -594,4 +607,34 @@ export async function credentialFileOutside(file, home) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Why this runner cannot mount the directories its file lists into a job, or
+ * nothing: each must lie under the home the VM shares, as a credential's file
+ * must, or the job could not mount the Mac's.
+ *
+ * @param {RunnerConfig["volumes"]} volumes
+ * @param {string} home
+ * @returns {Promise<string | undefined>}
+ */
+export async function runnerVolumesRefusal(volumes, home) {
+  for (const [index, { source }] of volumes.entries())
+    if (
+      ownerVolumeDirectory(source) &&
+      (await credentialFileOutside(source, home))
+    )
+      return runnerVolumeOutsideRefusal(index, source, home);
+  return undefined;
+}
+
+/**
+ * What is said of a directory in `volumes` outside the home the VM shares.
+ *
+ * @param {number} index
+ * @param {string} source
+ * @param {string} home
+ */
+export function runnerVolumeOutsideRefusal(index, source, home) {
+  return `volumes.${String(index)}.source ${source} is not under ${home}, or leads outside it, and ${home} is the only directory Colima shares with its VM by default, so a job could not mount the Mac's`;
 }

@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -18,8 +26,15 @@ import {
   workerRunnerReportRoute,
 } from "@chuggy/worker-contract/workerPool";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
-import { heldLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  heldLabel,
+  ownerVolumeProjectLabel,
+} from "@chuggy/worker-core/engineArgv.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
+import {
+  poolProjectDigest,
+  poolProjectLabelValue,
+} from "@chuggy/worker-core/poolIdentity.mjs";
 import { workerPoolClientPass } from "@chuggy/worker-core/poolLoop.mjs";
 
 import { fakeColima, fakeEngine } from "./engine.fixture.mjs";
@@ -1809,4 +1824,145 @@ test("a pool registered with --host turns the one selector across its containers
   assert.ok(run?.argv.includes(credentialMount(files[0])));
   assert.equal(started.length, 1);
   assert.equal(started[0].CHUG_WORKER_CREDENTIAL_NAME, "max-2");
+});
+
+/**
+ * The runs a job and then a session placed on a runner whose file lists
+ * `volumes` start, each named volume in `present` there already.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {{volumes: (home: string) => unknown[], pool?: Record<string, unknown>, project?: string, present?: (pool: Record<string, unknown>) => Map<string, Record<string, string>>}} listed
+ */
+async function volumesRan(t, listed) {
+  const { home, poolFile, paths, tokenFile } = await runnerFixture(t, {
+    ...(listed.pool === undefined ? {} : { pool: listed.pool }),
+  });
+  await ownerOnly(
+    paths.config,
+    JSON.stringify({
+      claudeTokenFile: tokenFile,
+      timeoutSecsMax: 3600,
+      outputBytesMax: 65536,
+      volumes: listed.volumes(home),
+    }),
+  );
+  const { engine, state } = fakeEngine();
+  for (const [name, labels] of listed.present?.(listed.pool ?? fixturePool) ??
+    [])
+    state.volumes.set(name, labels);
+  const runner = await runnerParts(await runnerSetup(poolFile, home), {
+    colima: fakeColima(90).colima,
+    uid: ownUid,
+    home,
+    log: () => undefined,
+    engine,
+  });
+  const job = await runner.backend.place(
+    {
+      ...assignment(),
+      ...(listed.project === undefined ? {} : { project: listed.project }),
+    },
+    "Job",
+  );
+  const session = await runner.backend.place(
+    { ...assignment(), assignment: "ses-1" },
+    "Session",
+  );
+  assert.deepEqual(
+    [job.placed, session.placed],
+    ["Placed", "Placed"],
+    job.evidence ?? session.evidence,
+  );
+  await runner.backend.settled();
+  const runs = state.calls.filter(({ argv }) => argv[0] === "run");
+  assert.equal(runs.length, 2);
+  return { home, job: runs[0].argv, session: runs[1].argv };
+}
+
+test("a run whose file lists volumes mounts each into a job, a directory of the home bound and a named volume uncopied, and none into a session", async (t) => {
+  const { home, job, session } = await volumesRan(t, {
+    volumes: (home) => [
+      { source: join(home, "cache"), target: "/cache/shared", readonly: true },
+      { source: "cargo", target: "/cache/cargo" },
+    ],
+    present: () => new Map([["cargo", {}]]),
+  });
+  const flags = [
+    "--mount",
+    `type=bind,source=${join(home, "cache")},target=/cache/shared,readonly`,
+    "--volume",
+    "cargo:/cache/cargo:nocopy",
+  ];
+  const at = job.indexOf(flags[1]) - 1;
+  assert.deepEqual(job.slice(at, at + flags.length), flags);
+  assert.ok(!session.some((flag) => flag.includes("/cache/")));
+});
+
+test("a personal runner's job mounts its assignment's project's volume of one scoped per project", async (t) => {
+  const pool = {
+    ...registeredPersonalFixture,
+    capabilities: ["Platform:Linux:Arm64"],
+  };
+  const identity =
+    /** @type {import("@chuggy/worker-core/poolIdentity.mjs").PoolIdentity} */ (
+      /** @type {unknown} */ (pool)
+    );
+  const digest = poolProjectDigest(identity, "chuggy");
+  const { job } = await volumesRan(t, {
+    pool,
+    project: "chuggy",
+    volumes: () => [
+      { source: "sccache", target: "/cache/sccache", scope: "project" },
+    ],
+    present: () =>
+      new Map([
+        [
+          `sccache-${String(digest)}`,
+          {
+            [ownerVolumeProjectLabel]: String(
+              poolProjectLabelValue(identity, "chuggy"),
+            ),
+          },
+        ],
+      ]),
+  });
+  assert.equal(
+    job[job.indexOf(`sccache-${String(digest)}:/cache/sccache:nocopy`) - 1],
+    "--volume",
+  );
+});
+
+test("a run is refused where its file lists a directory outside the home the VM shares, or one leading outside it, while a command that never polls is not", async (t) => {
+  const elsewhere = await mkdtemp(join(tmpdir(), "chuggy-darwin-elsewhere-"));
+  t.after(() => rm(elsewhere, { recursive: true, force: true }));
+  for (const source of /** @type {const} */ (["outside", "linked"])) {
+    const { home, poolFile, paths, tokenFile } = await runnerFixture(t);
+    const directory =
+      source === "outside" ? elsewhere : join(home, "linked-cache");
+    if (source === "linked") await symlink(elsewhere, directory);
+    await ownerOnly(
+      paths.config,
+      JSON.stringify({
+        claudeTokenFile: tokenFile,
+        timeoutSecsMax: 3600,
+        outputBytesMax: 65536,
+        volumes: [
+          { source: "cargo", target: "/cache/cargo" },
+          { source: directory, target: "/cache/shared" },
+        ],
+      }),
+    );
+    const setup = await runnerSetup(poolFile, home);
+    const host = {
+      colima: fakeColima(90).colima,
+      uid: ownUid,
+      home,
+      log: () => undefined,
+      engine: fakeEngine().engine,
+    };
+    await assert.rejects(runnerParts(setup, host), {
+      message: `runner configuration ${paths.config}: volumes.1.source ${directory} is not under ${home}, or leads outside it, and ${home} is the only directory Colima shares with its VM by default, so a job could not mount the Mac's`,
+    });
+    await runnerParts(setup, { ...host, polls: false });
+  }
 });

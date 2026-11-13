@@ -28,6 +28,7 @@ import {
   runnerConfigLimits,
   runnerPoolLimits,
   runnerPoolLimitsRefusal,
+  runnerVolumesRefusal,
 } from "./runnerConfig.mjs";
 import { runnerPaths } from "./runnerPaths.mjs";
 
@@ -112,6 +113,7 @@ test("the runner's file takes the limits' defaults, and refuses an engine, since
   assert.equal(config.network, "chuggy-jobs");
   assert.deepEqual(config.images, []);
   assert.deepEqual(config.pools, {});
+  assert.deepEqual(config.volumes, []);
   assert.equal(config.imageUnusedSecsMax, 604_800);
   assert.equal(config.diskFreeGibMin, 20);
   assert.equal(config.memoryFreeGibMin, 0);
@@ -770,6 +772,58 @@ test("a file may declare what its Mac meets, read as written, and a platform, a 
       JSON.stringify(capabilities),
     );
   }
+});
+
+test("a file may list volumes as the core reads them, a named volume scoped per project among them, and what one may not say is refused, naming where", async (t) => {
+  const volumes = [
+    { source: "/Users/owner/cache", target: "/cache", readonly: true },
+    { source: "sccache", target: "/cache/sccache", scope: "project" },
+  ];
+  const { paths } = await runnerFixture(t, { runner: { volumes } });
+  assert.deepEqual((await runnerConfig(paths.config)).volumes, [
+    volumes[0],
+    { ...volumes[1], readonly: false },
+  ]);
+  for (const [listed, why] of [
+    [
+      [{ source: "/srv/cache", target: "/cache", scope: "project" }],
+      /volumes\.0\.source /u,
+    ],
+    [[{ source: "cargo", target: "/workspace" }], /volumes\.0\.target /u],
+    [[{ source: "cargo", target: "/cache", mode: "ro" }], /volumes\.0 /u],
+  ]) {
+    const refused = await runnerFixture(t, { runner: { volumes: listed } });
+    await assert.rejects(
+      runnerConfig(refused.paths.config),
+      why,
+      JSON.stringify(listed),
+    );
+  }
+});
+
+test("a directory a volume names must lie under the home the VM shares, as named and through a link, and a named volume need not", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "chuggy-darwin-home-"));
+  const elsewhere = await mkdtemp(join(tmpdir(), "chuggy-darwin-elsewhere-"));
+  t.after(async () => {
+    await rm(home, { recursive: true, force: true });
+    await rm(elsewhere, { recursive: true, force: true });
+  });
+  await mkdir(join(home, "cache"));
+  await symlink(elsewhere, join(home, "linked"));
+  /** @param {string} source */
+  const listed = (source) => [
+    { source: "cargo", target: "/cache/cargo", readonly: false },
+    { source, target: "/cache/shared", readonly: false },
+  ];
+  assert.equal(
+    await runnerVolumesRefusal(listed(join(home, "cache")), home),
+    undefined,
+  );
+  for (const source of [elsewhere, join(home, "linked")])
+    assert.equal(
+      await runnerVolumesRefusal(listed(source), home),
+      `volumes.1.source ${source} is not under ${home}, or leads outside it, and ${home} is the only directory Colima shares with its VM by default, so a job could not mount the Mac's`,
+    );
 });
 
 test("a directory is not a runner configuration", async (t) => {

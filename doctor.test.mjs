@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 
-import { workspaceVolumeLabel } from "@chuggy/worker-core/engineArgv.mjs";
+import {
+  ownerVolumeProjectLabel,
+  workspaceVolumeLabel,
+} from "@chuggy/worker-core/engineArgv.mjs";
 import { keptWorkspaceKept } from "@chuggy/worker-core/keptWorkspace.mjs";
 import { registerRequest } from "@chuggy/worker-core/register.mjs";
 
@@ -36,6 +46,7 @@ const ownUid = process.getuid?.() ?? -1;
  * @property {string} [installed] the directory the copy is installed in, where not Homebrew's global one
  * @property {(path: string) => Promise<boolean>} [writable] whether an update could write a path, where not every one
  * @property {Record<string, string>} [volumes] each workspace volume in docker's VM, by name, and the size docker's `system df` prints of it
+ * @property {Record<string, Record<string, string>>} [ownerVolumes] each other named volume in docker's VM, by name, and its labels
  */
 
 /** Homebrew's npm prefix, under which a global install puts this package. */
@@ -73,6 +84,8 @@ async function doctored(
     state.volumes.set(name, { [workspaceVolumeLabel]: "" });
     state.volumeSizes.set(name, size);
   }
+  for (const [name, labels] of Object.entries(seen.ownerVolumes ?? {}))
+    state.volumes.set(name, labels);
   const findings = await doctorFindings({
     poolFile,
     paths,
@@ -144,6 +157,7 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    docker",
       "ok    capabilities",
       "ok    job network",
+      "ok    volumes",
       "ok    disk floor",
       "ok    pool token",
       "ok    plane",
@@ -328,6 +342,135 @@ test("a pool registered with --host fails doctor where the runner's file names w
   );
   assert.match(String(refused), /HOME is set for every host job/u);
   assert.equal(hosted(await doctored(t)), undefined);
+});
+
+/**
+ * The volumes line of doctor run on a runner whose file lists `volumes`, each
+ * named in `present` there already.
+ *
+ * @param {import("node:test").TestContext} t
+ * @param {(home: string) => Promise<unknown[]>} volumes
+ * @param {{pool?: Record<string, unknown>, present?: Record<string, Record<string, string>>}} [beside]
+ */
+async function volumesSaid(t, volumes, beside = {}) {
+  const lines = await doctored(
+    t,
+    {},
+    beside.pool === undefined ? {} : { pool: beside.pool },
+    async ({ home, paths, tokenFile }) => {
+      await ownerOnly(
+        paths.config,
+        JSON.stringify({
+          claudeTokenFile: tokenFile,
+          timeoutSecsMax: 3600,
+          outputBytesMax: 65536,
+          volumes: await volumes(home),
+        }),
+      );
+      return { ownerVolumes: beside.present ?? {} };
+    },
+  );
+  return { line: lines.find((line) => line.includes("  volumes: ")), lines };
+}
+
+test("doctor says each volume a job mounts: a directory of the home, a named volume present or for the first job to make", async (t) => {
+  let cache = "";
+  const { line } = await volumesSaid(
+    t,
+    async (home) => {
+      cache = join(home, "cache");
+      await mkdir(cache);
+      return [
+        { source: cache, target: "/cache/shared", readonly: true },
+        { source: "cargo", target: "/cache/cargo" },
+        { source: "npm-cache", target: "/cache/npm" },
+      ];
+    },
+    { present: { cargo: {} } },
+  );
+  assert.equal(
+    line,
+    `ok    volumes: ${cache} at /cache/shared, read-only; cargo at /cache/cargo, present; npm-cache at /cache/npm, missing until the first job started through chuggy's runtime makes it`,
+  );
+});
+
+test("doctor fails a volume's directory outside the home the VM shares, or leading outside it, or that is no directory, and a named volume labelled as a project's it is not listed as", async (t) => {
+  const elsewhere = await mkdtemp(join(tmpdir(), "chuggy-darwin-elsewhere-"));
+  t.after(() => rm(elsewhere, { recursive: true, force: true }));
+  for (const made of [
+    async () => elsewhere,
+    async (/** @type {string} */ home) => {
+      await symlink(elsewhere, join(home, "linked"));
+      return join(home, "linked");
+    },
+  ]) {
+    let source = "";
+    let home = "";
+    const { line } = await volumesSaid(t, async (at) => {
+      home = at;
+      source = await made(at);
+      return [{ source, target: "/cache" }];
+    });
+    assert.equal(
+      line,
+      `FAIL  volumes: volumes.0.source ${source} is not under ${home}, or leads outside it, and ${home} is the only directory Colima shares with its VM by default, so a job could not mount the Mac's`,
+    );
+  }
+  const file = await volumesSaid(t, async (home) => {
+    await writeFile(join(home, "cache"), "");
+    return [{ source: join(home, "cache"), target: "/cache" }];
+  });
+  assert.match(
+    String(file.line),
+    /^FAIL {2}volumes: \/.*\/cache is not a directory$/u,
+  );
+  const labelled = await volumesSaid(
+    t,
+    async () => [{ source: "cargo", target: "/cache" }],
+    { present: { cargo: { [ownerVolumeProjectLabel]: "vteng/chuggy" } } },
+  );
+  assert.equal(
+    labelled.line,
+    "FAIL  volumes: cargo is labelled as vteng/chuggy's, and is listed as no project's",
+  );
+});
+
+test("doctor names a personal runner's volume scoped per project as each job's project's, without looking for it, beside a failing one", async (t) => {
+  const pool = {
+    ...registeredPersonalFixture,
+    capabilities: ["Platform:Linux:Arm64"],
+  };
+  const scoped =
+    "sccache is scoped per project: each job mounts its own project's, which, where it is missing, the first job in that project started through chuggy's runtime makes";
+  const { line } = await volumesSaid(
+    t,
+    async () => [
+      { source: "cargo", target: "/cache/cargo" },
+      { source: "sccache", target: "/cache/sccache", scope: "project" },
+    ],
+    { pool, present: { cargo: { [ownerVolumeProjectLabel]: "vteng/chuggy" } } },
+  );
+  assert.equal(
+    line,
+    `FAIL  volumes: cargo is labelled as vteng/chuggy's, and is listed as no project's; ${scoped}`,
+  );
+});
+
+test("a pool registered with --host says its jobs on the Mac itself mount none of the volumes the runner's file lists", async (t) => {
+  const pool = {
+    ...fixturePool,
+    capabilities: [...fixturePool.capabilities, "Platform:MacOS:Arm64"],
+    host: true,
+  };
+  const { lines } = await volumesSaid(
+    t,
+    async () => [{ source: "cargo", target: "/cache/cargo" }],
+    { pool },
+  );
+  assert.equal(
+    lines.find((line) => line.includes("host jobs")),
+    "ok    host jobs: a job that pins no image and names the Mac's platform runs on the Mac itself, unisolated, and mounts none of the volumes the runner's file lists",
+  );
 });
 
 test("doctor says what a run advertises and where it comes from, the platform of whichever VM docker runs, and fails where a run would be refused", async (t) => {
