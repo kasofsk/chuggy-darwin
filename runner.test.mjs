@@ -30,6 +30,8 @@ import {
   heldLabel,
   ownerVolumeProjectLabel,
 } from "@chuggy/worker-core/engineArgv.mjs";
+import { envelopeCredentialFiles } from "@chuggy/worker-core/entrypoint.mjs";
+import { heldCredentialsUnmounted } from "@chuggy/worker-core/heldCredentials.mjs";
 import { jobProviderCredentialFile } from "@chuggy/worker-core/job.mjs";
 import {
   poolProjectDigest,
@@ -1480,6 +1482,51 @@ test("a pool registered with --host hands a job on the Mac requiring Agent:Codex
     codex,
   );
   assert.ok(!Object.hasOwn(started, claudeCredentialVariable));
+});
+
+/**
+ * Catches a job's agent credential handed out of the core's sight, which the
+ * core would ask the plane for and, not delivered, end the attempt over.
+ */
+test("a job in a container and one on the Mac are each handed the agent's credential where the core counts it mounted, so the plane is asked only for the task's other credentials", async (t) => {
+  const agent = { credential: "anthropic" };
+  const listed = ["anthropic", "registry"];
+  const container = await runnerFixture(t);
+  await claudeNamed(container.paths, { claudeTokenFile: container.tokenFile });
+  const { engine, state } = fakeEngine();
+  const runner = await runnerParts(
+    await runnerSetup(container.poolFile, container.home),
+    {
+      colima: fakeColima(90).colima,
+      uid: ownUid,
+      home: container.home,
+      log: () => undefined,
+      engine,
+    },
+  );
+  const placed = await runner.backend.place(assignment(), "Job");
+  assert.equal(placed.placed, "Placed", placed.evidence);
+  await runner.backend.settled();
+  const run = state.calls.find(({ argv }) => argv[0] === "run");
+  const host = await runnerFixture(t, { pool: hostPool });
+  await claudeNamed(host.paths, { claudeTokenFile: host.tokenFile });
+  const started = await hostStartedWith(host, [
+    "Platform:MacOS:Arm64",
+    "Agent:Claude",
+  ]);
+  for (const envelope of [
+    envFileVariables(run?.envFile)[workerTaskVariable],
+    started[workerTaskVariable],
+  ]) {
+    assert.ok(envelope !== undefined);
+    assert.deepEqual(
+      heldCredentialsUnmounted(
+        listed,
+        envelopeCredentialFiles(JSON.parse(envelope), agent),
+      ),
+      ["registry"],
+    );
+  }
 });
 
 /** A release of this package above the copy a suite's runs are made of. */
