@@ -48,7 +48,7 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 
 ```json
 {
-  "claudeTokenFile": "/Users/you/.config/chuggy/claude-token",
+  "claudeTokenFile": "/Users/you/.config/chuggy/claude/token",
   "timeoutSecsMax": 3600,
   "outputBytesMax": 1048576
 }
@@ -79,12 +79,12 @@ An agent reads this file when it starts, so restart it after an edit; `status` a
 **The memory budget** is the memory of Colima's VM, as docker's `info` says, less `memoryFreeGibMin`, which is kept for what the VM and docker use outside every container. Every running container in the VM counts against it, whichever agent started it: a job or session a runner ran at its memory cap, and anything else at what `docker stats` says it uses. A job is held from when its agent takes it, before its image is pulled, and starts once the room left takes its cap and every job held before it has started; one whose deadline comes too near to start fails as a job lost on its runner, which chuggy resumes up to its retry limit. `memoryReservedGib` is kept from jobs for what always runs beside them, such as a database: a job asking more than the rest, the ceiling, is refused. Each poll tells chuggy the room and the ceiling, so a chuggy that reads them offers only jobs that fit, and the agents on this Mac take those one at a time. Sessions are counted but never held, and may ask the whole budget. Jobs on the Mac itself are not counted. `status` says the room, the budget, the ceiling, the sessions' caps and whether the agent takes jobs, and why a held job waits.
 
 ```json
-"claudeCredential": { "kind": "Subscription", "tokenFile": "/Users/you/.config/chuggy/claude-token" }
-"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/Users/you/.config/chuggy/anthropic-api-key" }
-"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/Users/you/.config/chuggy/bedrock-api-key" }
-"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/Users/you/.config/chuggy/aws-credentials", "profile": "chuggy" }
-"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/Users/you/.config/chuggy/vertex-key.json" }
-"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/Users/you/.config/chuggy/foundry-api-key" }
+"claudeCredential": { "kind": "Subscription", "tokenFile": "/Users/you/.config/chuggy/claude/token" }
+"claudeCredential": { "kind": "ApiKey", "apiKeyFile": "/Users/you/.config/chuggy/anthropic/api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "apiKeyFile": "/Users/you/.config/chuggy/bedrock/api-key" }
+"claudeCredential": { "kind": "Bedrock", "region": "us-west-2", "credentialsFile": "/Users/you/.config/chuggy/aws/credentials", "profile": "chuggy" }
+"claudeCredential": { "kind": "Vertex", "region": "us-east5", "project": "your-project", "credentialsFile": "/Users/you/.config/chuggy/vertex/key.json" }
+"claudeCredential": { "kind": "Foundry", "resource": "your-resource", "apiKeyFile": "/Users/you/.config/chuggy/foundry/api-key" }
 ```
 
 - **Subscription**: `claude setup-token`'s output, alone. Jobs share your Claude plan's limits.
@@ -109,15 +109,15 @@ A job whose task requires `Agent:Codex` is handed this file in place of the Clau
 "claudeCredential": {
   "prefer": "PreferOAuth",
   "oauth": { "order": "RoundRobin", "credentials": [
-    { "name": "max-1", "tokenFile": "/Users/you/.config/chuggy/claude-max-1" },
-    { "name": "max-2", "tokenFile": "/Users/you/.config/chuggy/claude-max-2" } ] },
+    { "name": "max-1", "tokenFile": "/Users/you/.config/chuggy/claude-max-1/token" },
+    { "name": "max-2", "tokenFile": "/Users/you/.config/chuggy/claude-max-2/token" } ] },
   "apiKey": { "order": "InOrder", "credentials": [
-    { "name": "console", "apiKeyFile": "/Users/you/.config/chuggy/anthropic-api-key" } ] }
+    { "name": "console", "apiKeyFile": "/Users/you/.config/chuggy/anthropic/api-key" } ] }
 },
 "codexCredential": {
   "prefer": "OAuthOnly",
   "oauth": { "order": "InOrder", "credentials": [ { "name": "chatgpt", "authFile": "/Users/you/.codex/auth.json" } ] },
-  "apiKey": { "order": "InOrder", "credentials": [ { "name": "openai", "apiKeyFile": "/Users/you/.config/chuggy/openai-api-key" } ] }
+  "apiKey": { "order": "InOrder", "credentials": [ { "name": "openai", "apiKeyFile": "/Users/you/.config/chuggy/openai/api-key" } ] }
 }
 ```
 

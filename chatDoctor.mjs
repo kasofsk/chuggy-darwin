@@ -43,6 +43,7 @@ import {
   checked,
   claudeCredentialFindings,
   dockerChecked,
+  doctorReportKept,
   networkChecked,
   poolTokenChecked,
   updatesFinding,
@@ -58,6 +59,7 @@ import { runnerConfig } from "./runnerConfig.mjs";
  * @typedef {import("@chuggy/worker-core/engine.mjs").Engine} Engine
  * @typedef {import("@chuggy/worker-core/chatHost.mjs").ChatSupervisorState} ChatSupervisorState
  * @typedef {import("./doctor.mjs").DoctorFinding} DoctorFinding
+ * @typedef {import("./doctor.mjs").DoctorReport} DoctorReport
  * @typedef {import("./runnerConfig.mjs").RunnerConfig} RunnerConfig
  * @typedef {import("./runnerPaths.mjs").RunnerPaths} RunnerPaths
  *
@@ -344,16 +346,16 @@ function chatMemoryFinding(settings, vmMib) {
  * settings it gives the host, its credential and its layout.
  *
  * @param {ChatDoctorInput} input
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-async function chatFilesChecked(input, findings) {
-  const credentials = await checked(findings, "chat host file", async () => {
+async function chatFilesChecked(input, report) {
+  const credentials = await checked(report, "chat host file", async () => {
     const read = await poolCredentials(input.poolFile);
     const refusal = chatFileRefusal(read, input.poolFile);
     if (refusal !== undefined) throw new Error(refusal);
     return [read, `${input.poolFile} names chat host ${poolLabelValue(read)}`];
   });
-  const config = await checked(findings, "runner configuration", async () => {
+  const config = await checked(report, "runner configuration", async () => {
     const read = await runnerConfig(input.paths.config);
     const settings =
       credentials === undefined
@@ -365,10 +367,10 @@ async function chatFilesChecked(input, findings) {
     ];
   });
   if (config !== undefined) {
-    findings.push(
+    report.found(
       ...(await claudeCredentialFindings(input, config.config, false, true)),
     );
-    await checked(findings, "credential layout", async () => {
+    await checked(report, "credential layout", async () => {
       const refusal = await chatCredentialRefusal(config.config, input);
       if (refusal !== undefined) throw new Error(refusal);
       return [
@@ -378,7 +380,7 @@ async function chatFilesChecked(input, findings) {
     });
   }
   if (credentials !== undefined)
-    await checked(findings, "control socket", async () => [
+    await checked(report, "control socket", async () => [
       true,
       poolSocket(poolRuntimeDirectory(input.paths, credentials)),
     ]);
@@ -392,25 +394,25 @@ async function chatFilesChecked(input, findings) {
  * @param {ChatDoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {{config: RunnerConfig, settings: ChatHostSettings}} found
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-async function chatEngineChecked(input, credentials, found, findings) {
+async function chatEngineChecked(input, credentials, found, report) {
   const engine = input.parts.engine();
   const machine = await dockerChecked(
     engine,
     credentials,
-    findings,
+    report,
     "this host's",
   );
   if (machine === undefined) return;
-  await networkChecked(engine, found.config.network, findings, "network");
+  await networkChecked(engine, found.config.network, report, "network");
   const runtime = poolRuntimeDirectory(input.paths, credentials);
   const { finding, service } = await chatSupervisorFinding(
     engine,
     credentials,
     poolSocket(runtime),
   );
-  findings.push(finding);
+  report.found(finding);
   /** @type {ChatDoctorRead} */
   const read = {
     credentials,
@@ -421,32 +423,33 @@ async function chatEngineChecked(input, credentials, found, findings) {
     tokens: input.parts.tokens(credentials),
     token: undefined,
   };
-  findings.push(chatMemoryFinding(found.settings, machine.size.memoryMib));
-  read.token = await poolTokenChecked(read.tokens, credentials, findings);
-  const image = await checked(findings, "session image", () =>
+  report.found(chatMemoryFinding(found.settings, machine.size.memoryMib));
+  read.token = await poolTokenChecked(read.tokens, credentials, report);
+  const image = await checked(report, "session image", () =>
     chatImageNamed(input, read),
   );
   if (image === undefined) return;
-  const here = await checked(findings, "image pulled", () =>
-    chatImageHere(read, image),
+  const here = await checked(
+    report,
+    "image pulled",
+    () => chatImageHere(read, image),
+    `finding ${image} in docker's VM, or pulling it, which can take minutes`,
   );
   if (here === undefined) return;
-  await checked(findings, "credential owner", () =>
-    chatOwnerProbed(read, image),
-  );
+  await checked(report, "credential owner", () => chatOwnerProbed(read, image));
 }
 
 /**
  * @param {ChatDoctorInput} input
+ * @param {DoctorReport} said told of each check as it is made
  * @returns {Promise<DoctorFinding[]>}
  */
-export async function chatDoctorFindings(input) {
-  /** @type {DoctorFinding[]} */
-  const findings = [];
-  const { credentials, read } = await chatFilesChecked(input, findings);
-  findings.push(await agentFinding(input));
+export async function chatDoctorFindings(input, said) {
+  const { findings, report } = doctorReportKept(said);
+  const { credentials, read } = await chatFilesChecked(input, report);
+  report.found(await agentFinding(input));
   if (read !== undefined)
-    findings.push(await updatesFinding(input.parts.updates(read.config)));
+    report.found(await updatesFinding(input.parts.updates(read.config)));
   if (
     credentials !== undefined &&
     read !== undefined &&
@@ -456,7 +459,7 @@ export async function chatDoctorFindings(input) {
       input,
       credentials,
       { config: read.config, settings: read.settings },
-      findings,
+      report,
     );
   return findings;
 }
