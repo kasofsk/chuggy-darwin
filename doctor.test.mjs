@@ -47,7 +47,17 @@ const ownUid = process.getuid?.() ?? -1;
  * @property {(path: string) => Promise<boolean>} [writable] whether an update could write a path, where not every one
  * @property {Record<string, string>} [volumes] each workspace volume in docker's VM, by name, and the size docker's `system df` prints of it
  * @property {Record<string, Record<string, string>>} [ownerVolumes] each other named volume in docker's VM, by name, and its labels
+ * @property {(...asked: unknown[]) => Promise<unknown>} [poll] what the plane answers a poll with, where not Reconciled at once
+ * @property {import("./doctor.mjs").DoctorReport} [report] what is told of each check as it is made
  */
+
+/** What the plane answers a poll with when it holds nothing for the pool. */
+const reconciled = {
+  polled: "Reconciled",
+  assignments: [],
+  sessions: [],
+  stop: [],
+};
 
 /** Homebrew's npm prefix, under which a global install puts this package. */
 const homebrewPrefix = "/opt/homebrew";
@@ -86,45 +96,43 @@ async function doctored(
   }
   for (const [name, labels] of Object.entries(seen.ownerVolumes ?? {}))
     state.volumes.set(name, labels);
-  const findings = await doctorFindings({
-    poolFile,
-    paths,
-    uid: ownUid,
-    home,
-    path: seen.path,
-    agentVersion: async (file) => seen.agentVersions?.[file],
-    parts: {
-      updates: (config) =>
-        runnerUpdates(
-          { config, paths },
-          {
-            ...copy,
-            cli:
-              seen.installed === undefined
-                ? copy.cli
-                : join(seen.installed, "cli.mjs"),
-          },
-          { writable: seen.writable ?? (async () => true) },
-        ),
-      engine: () => engine,
-      colima: () =>
-        fakeColima(vm.diskGib ?? 90, { rosetta: vm.rosetta ?? "enabled" })
-          .colima,
-      tokens: () => ({
-        acquire: async () => ({ acquired: "Token", token: "pool-token" }),
-        invalidate: () => undefined,
-      }),
-      plane: () =>
-        /** @type {any} */ ({
-          poll: async () => ({
-            polled: "Reconciled",
-            assignments: [],
-            sessions: [],
-            stop: [],
-          }),
+  const findings = await doctorFindings(
+    {
+      poolFile,
+      paths,
+      uid: ownUid,
+      home,
+      path: seen.path,
+      agentVersion: async (file) => seen.agentVersions?.[file],
+      parts: {
+        updates: (config) =>
+          runnerUpdates(
+            { config, paths },
+            {
+              ...copy,
+              cli:
+                seen.installed === undefined
+                  ? copy.cli
+                  : join(seen.installed, "cli.mjs"),
+            },
+            { writable: seen.writable ?? (async () => true) },
+          ),
+        engine: () => engine,
+        colima: () =>
+          fakeColima(vm.diskGib ?? 90, { rosetta: vm.rosetta ?? "enabled" })
+            .colima,
+        tokens: () => ({
+          acquire: async () => ({ acquired: "Token", token: "pool-token" }),
+          invalidate: () => undefined,
         }),
+        plane: () =>
+          /** @type {any} */ ({
+            poll: seen.poll ?? (async () => reconciled),
+          }),
+      },
     },
-  });
+    seen.report,
+  );
   return findings.map(findingLine);
 }
 
@@ -163,6 +171,52 @@ test("a Mac with everything a run needs passes every check, warning only that no
       "ok    plane",
     ],
   );
+});
+
+test("doctor polls the plane for nothing held, wanted or advertised, and waits for none of it", async (t) => {
+  /** @type {unknown[][]} */
+  const polls = [];
+  await doctored(t, {}, {}, async () => ({
+    poll: async (...asked) => {
+      polls.push(asked);
+      return reconciled;
+    },
+  }));
+  assert.deepEqual(polls, [["pool-token", [], 0, 0, { waitSecs: 0 }]]);
+});
+
+test("doctor hands out each finding as it is made, every earlier one out while the plane still holds its poll", async (t) => {
+  /** @type {string[]} */
+  const said = [];
+  /** @type {(answer: unknown) => void} */
+  let release = () => undefined;
+  /** @type {() => void} */
+  let polled = () => undefined;
+  const polling = new Promise((resolve) => {
+    polled = () => resolve(undefined);
+  });
+  const lines = doctored(t, {}, {}, async () => ({
+    poll: () => {
+      polled();
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+    report: {
+      running: (check) => said.push(`running ${check}`),
+      found: (...findings) => said.push(...findings.map(findingLine)),
+    },
+  }));
+  await polling;
+  assert.deepEqual(
+    said.slice(-3).map((line) => line.replace(/: .*$/u, "")),
+    ["running pool token", "ok    pool token", "running plane"],
+  );
+  const held = said.filter((line) => !line.startsWith("running "));
+  release(reconciled);
+  const all = await lines;
+  assert.deepEqual(held, all.slice(0, -1));
+  assert.match(said.at(-1) ?? "", /^ok {4}plane: /u);
 });
 
 test("doctor names a personal runner's jobs alone among its limits, and fails one whose concurrencyMax is 0, which holds no session", async (t) => {

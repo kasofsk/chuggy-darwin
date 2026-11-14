@@ -24,5 +24,11 @@ process.exit(
     cli: fileURLToPath(import.meta.url),
     out: (line) => process.stdout.write(`${line}\n`),
     err: (line) => process.stderr.write(`${line}\n`),
+    terminal: process.stderr.isTTY
+      ? {
+          write: (text) => process.stderr.write(text),
+          columns: () => process.stderr.columns,
+        }
+      : undefined,
   }),
 );

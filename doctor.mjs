@@ -2,8 +2,9 @@
  * What `doctor` checks, in the order a run depends on them, each answered as
  * passed or not with what was found. It changes nothing: a missing network is
  * reported for a run to make, and its one poll names nothing held, wants
- * nothing and advertises nothing, which the plane answers without granting or
- * releasing a lease or changing what the pool advertised.
+ * nothing, advertises nothing and waits for nothing, which the plane answers
+ * in one pass without granting or releasing a lease or changing what the pool
+ * advertised.
  *
  * Beside what a run needs, it says what a run advertises, whose platforms are
  * whichever docker's VM runs when the run starts, warning where an Apple
@@ -95,6 +96,10 @@ import {
  *
  * @typedef {{check: string, passed: boolean, detail: string, warning?: true}} DoctorFinding a warning passes, and is printed as one
  *
+ * @typedef {object} DoctorReport what is said of the checks as they are made
+ * @property {(check: string, slow?: string) => void} running a check begun, and what it is doing where it can take minutes
+ * @property {(...findings: DoctorFinding[]) => void} found each finding, once it is made
+ *
  * @typedef {object} DoctorParts what a run would reach, built from what was read
  * @property {() => Engine} engine
  * @property {() => import("./colimaVm.mjs").ColimaCli} colima
@@ -112,23 +117,52 @@ import {
  * @property {DoctorParts} parts
  */
 
+/** A report that says nothing. */
+const doctorReportSilent = {
+  running: () => undefined,
+  found: () => undefined,
+};
+
+/**
+ * Every finding `report` is handed, kept as it is passed on.
+ *
+ * @param {DoctorReport} report
+ * @returns {{findings: DoctorFinding[], report: DoctorReport}}
+ */
+export function doctorReportKept(report) {
+  /** @type {DoctorFinding[]} */
+  const findings = [];
+  return {
+    findings,
+    report: {
+      running: report.running,
+      found: (...made) => {
+        findings.push(...made);
+        report.found(...made);
+      },
+    },
+  };
+}
+
 /**
  * Runs one check: a probe answers what it found, or throws what is wrong.
  *
  * @template T
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  * @param {string} check
  * @param {() => Promise<[T, string]>} probe
+ * @param {string} [slow] what the probe is doing, where it can take minutes
  * @returns {Promise<T | undefined>}
  */
-export async function checked(findings, check, probe) {
+export async function checked(report, check, probe, slow) {
+  report.running(check, slow);
   try {
     const [value, detail] = await probe();
-    findings.push({ check, passed: true, detail });
+    report.found({ check, passed: true, detail });
     return value;
   } catch (failure) {
     const detail = failure instanceof Error ? failure.message : String(failure);
-    findings.push({ check, passed: false, detail });
+    report.found({ check, passed: false, detail });
     return undefined;
   }
 }
@@ -600,11 +634,11 @@ function amd64Unrun(rosetta) {
  *
  * @param {import("@chuggy/worker-core/engine.mjs").Engine} engine
  * @param {PoolCredentials} credentials
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  * @param {string} whose the pool file's, as a person names it
  */
-export function dockerChecked(engine, credentials, findings, whose) {
-  return checked(findings, "docker", async () => {
+export function dockerChecked(engine, credentials, report, whose) {
+  return checked(report, "docker", async () => {
     const endpoint = await dockerEndpoint(engine);
     const vm = await dockerMachine(engine);
     const listed = await engine.exec(listArgv(poolLabelValue(credentials)));
@@ -622,11 +656,11 @@ export function dockerChecked(engine, credentials, findings, whose) {
  *
  * @param {import("@chuggy/worker-core/engine.mjs").Engine} engine
  * @param {string} network
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  * @param {string} check
  */
-export function networkChecked(engine, network, findings, check) {
-  return checked(findings, check, async () => {
+export function networkChecked(engine, network, report, check) {
+  return checked(report, check, async () => {
     const inspected = await engine.exec(networkInspectArgv(network));
     if (inspected.code === 0) return [true, `${network} is present`];
     if (engineFailure(inspected) === "NotFound")
@@ -639,22 +673,22 @@ export function networkChecked(engine, network, findings, check) {
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
  * @param {RunnerConfig} config
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-async function engineChecks(input, credentials, config, findings) {
+async function engineChecks(input, credentials, config, report) {
   const engine = input.parts.engine();
   const machine = await dockerChecked(
     engine,
     credentials,
-    findings,
+    report,
     "this pool's",
   );
   if (machine === undefined) return;
-  findings.push(await capabilitiesFinding(input, credentials, config, machine));
-  await networkChecked(engine, config.network, findings, "job network");
-  findings.push(await ownerVolumesFinding(input, engine, credentials, config));
+  report.found(await capabilitiesFinding(input, credentials, config, machine));
+  await networkChecked(engine, config.network, report, "job network");
+  report.found(await ownerVolumesFinding(input, engine, credentials, config));
   const disk = await diskFloorSaid(config, engine, input.parts.colima());
-  findings.push(
+  report.found(
     disk.warning
       ? {
           check: "disk floor",
@@ -764,10 +798,10 @@ async function ownerVolumesFinding(input, engine, credentials, config) {
  *
  * @param {import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolClient["tokens"]} tokens
  * @param {PoolCredentials} credentials
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-export function poolTokenChecked(tokens, credentials, findings) {
-  return checked(findings, "pool token", async () => {
+export function poolTokenChecked(tokens, credentials, report) {
+  return checked(report, "pool token", async () => {
     const acquired = await tokens.acquire();
     if (acquired.acquired !== "Token") throw new Error(acquired.evidence);
     return [acquired.token, `issued by ${credentials.tokenUrl}`];
@@ -777,17 +811,19 @@ export function poolTokenChecked(tokens, credentials, findings) {
 /**
  * @param {DoctorInput} input
  * @param {PoolCredentials} credentials
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-async function planeChecks(input, credentials, findings) {
+async function planeChecks(input, credentials, report) {
   const token = await poolTokenChecked(
     input.parts.tokens(credentials),
     credentials,
-    findings,
+    report,
   );
   if (token === undefined) return;
-  await checked(findings, "plane", async () => {
-    const polled = await input.parts.plane(credentials).poll(token, [], 0, 0);
+  await checked(report, "plane", async () => {
+    const polled = await input.parts.plane(credentials).poll(token, [], 0, 0, {
+      waitSecs: 0,
+    });
     if (polled.polled === "Stale")
       throw new Error("the plane rejected a token the issuer had just issued");
     if (polled.polled !== "Reconciled") throw new Error(polled.evidence);
@@ -850,15 +886,15 @@ export async function agentFinding(input) {
  *
  * @param {DoctorInput} input
  * @param {PoolCredentials | undefined} credentials
- * @param {DoctorFinding[]} findings
+ * @param {DoctorReport} report
  */
-async function runnerConfigChecked(input, credentials, findings) {
+async function runnerConfigChecked(input, credentials, report) {
   const check = "runner configuration";
   let config;
   try {
     config = await runnerConfig(input.paths.config);
   } catch (failure) {
-    findings.push({
+    report.found({
       check,
       passed: false,
       detail: failure instanceof Error ? failure.message : String(failure),
@@ -891,7 +927,7 @@ async function runnerConfigChecked(input, credentials, findings) {
         `pools.${name} names no pool file in ${input.paths.pools}, so it limits no service`,
     ),
   ].join("; ");
-  findings.push(
+  report.found(
     idle !== undefined
       ? { check, passed: false, detail }
       : unmatched.length === 0
@@ -991,12 +1027,12 @@ export function findingLine(finding) {
 
 /**
  * @param {DoctorInput} input
+ * @param {DoctorReport} [said] told of each check as it is made
  * @returns {Promise<DoctorFinding[]>}
  */
-export async function doctorFindings(input) {
-  /** @type {DoctorFinding[]} */
-  const findings = [];
-  const credentials = await checked(findings, "pool file", async () => {
+export async function doctorFindings(input, said = doctorReportSilent) {
+  const { findings, report } = doctorReportKept(said);
+  const credentials = await checked(report, "pool file", async () => {
     const read = await poolCredentials(input.poolFile);
     const refusal = poolFileRefusal(read, input.poolFile);
     if (refusal !== undefined) throw new Error(refusal);
@@ -1005,34 +1041,36 @@ export async function doctorFindings(input) {
       `${input.poolFile} names ${poolIdentityPersonal(read) ? "personal runner" : "pool"} ${poolLabelValue(read)}`,
     ];
   });
-  const config = await runnerConfigChecked(input, credentials, findings);
+  const config = await runnerConfigChecked(input, credentials, report);
   if (credentials !== undefined)
-    await checked(findings, "control socket", async () => [
+    await checked(report, "control socket", async () => [
       true,
       poolSocket(poolRuntimeDirectory(input.paths, credentials)),
     ]);
   if (config !== undefined) {
-    findings.push(
+    report.found(
       ...(await claudeCredentialFindings(
         input,
         config,
         credentials?.host === true,
       )),
+    );
+    report.found(
       ...(await codexCredentialFindings(input, config, credentials)),
     );
   }
   if (credentials?.host === true && config !== undefined)
-    await checked(findings, "host jobs", async () => [
+    await checked(report, "host jobs", async () => [
       true,
       hostJobsChecked(config),
     ]);
-  findings.push(await agentFinding(input));
+  report.found(await agentFinding(input));
   if (config !== undefined)
-    findings.push(await updatesFinding(input.parts.updates(config)));
-  findings.push(await keptWorkspacesFinding(input));
+    report.found(await updatesFinding(input.parts.updates(config)));
+  report.found(await keptWorkspacesFinding(input));
   if (credentials === undefined) return findings;
   if (config !== undefined)
-    await engineChecks(input, credentials, config, findings);
-  await planeChecks(input, credentials, findings);
+    await engineChecks(input, credentials, config, report);
+  await planeChecks(input, credentials, report);
   return findings;
 }

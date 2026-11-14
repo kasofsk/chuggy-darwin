@@ -64,6 +64,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} [cli] the copy's entry, where not one installed outside npm's global directory
  * @property {boolean} [desktop] `false` where the user is not logged in at the Mac's screen
  * @property {import("./power.mjs").PowerAssertion} [power] where not one asserting nothing
+ * @property {string[]} [written] each write, as it is made, `out ` or `err ` before each line and `tty ` before what is written to stderr as a terminal
+ * @property {boolean} [terminal] whether stderr is a terminal, 80 columns wide
  */
 
 /** The version the suite's copy says it is. */
@@ -120,8 +122,21 @@ async function called(argv, machine = {}) {
     updatePorts: machine.updatePorts,
     desktop: async () => machine.desktop ?? true,
     power: machine.power ?? { held: () => undefined, asserted: () => false },
-    out: (line) => out.push(line),
-    err: (line) => err.push(line),
+    out: (line) => {
+      out.push(line);
+      machine.written?.push(`out ${line}`);
+    },
+    err: (line) => {
+      err.push(line);
+      machine.written?.push(`err ${line}`);
+    },
+    terminal:
+      machine.terminal === true
+        ? {
+            write: (text) => machine.written?.push(`tty ${text}`),
+            columns: () => 80,
+          }
+        : undefined,
   });
   return { status, out: out.join("\n"), err: err.join("\n") };
 }
@@ -1973,4 +1988,138 @@ test("doctor of a chat host takes the image chuggy named from the running servic
   );
   assert.match(out, /^ok {4}image pulled: .* is here$/mu);
   assert.equal(requests.length, 0);
+});
+
+/** A point a fake waits at until the suite opens it. */
+function gate() {
+  /** @type {() => void} */
+  let open = () => undefined;
+  /** @type {Promise<void>} */
+  const opened = new Promise((resolve) => {
+    open = () => resolve();
+  });
+  return { open, opened };
+}
+
+test("doctor of a pool prints each finding as it is made, every earlier one out while the plane holds its poll", async (t) => {
+  const reached = gate();
+  const released = gate();
+  t.mock.method(globalThis, "fetch", async () => {
+    reached.open();
+    await released.opened;
+    return globalThis.Response.json({
+      assignments: [],
+      sessions: [],
+      stop: [],
+    });
+  });
+  const { home, poolFile } = await runnerFixture(t);
+  /** @type {string[]} */
+  const written = [];
+  const doctoring = called(["doctor", "--pool", poolFile], {
+    home,
+    tokens: issuedTokens,
+    written,
+  });
+  await reached.opened;
+  const held = [...written];
+  released.open();
+  await doctoring;
+  assert.match(held.join("\n"), /^out ok {4}pool token: /mu);
+  assert.ok(!held.some((line) => / plane: /u.test(line)), held.join("\n"));
+  assert.deepEqual(written.slice(0, held.length), held);
+  assert.match(written.at(-1) ?? "", /^out ok {4}plane: /u);
+});
+
+/** The line a check that can take minutes says before it starts, off a terminal. */
+const pullingLine =
+  "err image pulled: finding ghcr.io/shame/chat:1 in docker's VM, or pulling it, which can take minutes";
+
+test("doctor of a chat host off a terminal says the pull may take minutes before it starts, every earlier finding out while it is held, and writes no carriage return or escape", async (t) => {
+  const { home, poolFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const { engine } = probedEngine("0 0");
+  const reached = gate();
+  const released = gate();
+  /** @type {string[]} */
+  const written = [];
+  const doctoring = called(["doctor", "--pool", poolFile], {
+    home,
+    tokens: issuedTokens,
+    written,
+    engine: {
+      ...engine,
+      exec: async (argv, call) => {
+        if (argv[0] === "pull") {
+          reached.open();
+          await released.opened;
+        }
+        return await engine.exec(argv, call);
+      },
+    },
+  });
+  await reached.opened;
+  const held = [...written];
+  released.open();
+  const { status, err } = await doctoring;
+  assert.equal(status, 0, err);
+  assert.match(held.join("\n"), /^out ok {4}session image: /mu);
+  assert.equal(held.at(-1), pullingLine);
+  assert.deepEqual(written.slice(0, held.length), held);
+  assert.match(
+    written[held.length] ?? "",
+    /^out ok {4}image pulled: ghcr\.io\/shame\/chat:1 was pulled$/u,
+  );
+  assert.ok(
+    written.every((line) => !line.includes("\r") && !line.includes("\x1b")),
+    "no carriage return or escape off a terminal",
+  );
+  assert.ok(written.every((line) => !line.startsWith("tty ")));
+});
+
+test("doctor of a chat host on a terminal names the check under way on one line of stderr, cleared before each finding, and not on a dumb one", async (t) => {
+  const { home, poolFile } = await chatFixture(t, {
+    runner: { chat: { image: { image: "ghcr.io/shame/chat:1" } } },
+  });
+  const cleared = "tty \r\x1b[2K";
+  for (const term of ["xterm-256color", "dumb"]) {
+    /** @type {string[]} */
+    const written = [];
+    const { status, err } = await called(["doctor", "--pool", poolFile], {
+      home,
+      engine: probedEngine("0 0").engine,
+      tokens: issuedTokens,
+      environment: { TERM: term },
+      terminal: true,
+      written,
+    });
+    assert.equal(status, 0, err);
+    if (term === "dumb") {
+      assert.ok(written.every((line) => !line.startsWith("tty ")));
+      assert.ok(written.includes(pullingLine));
+      continue;
+    }
+    assert.ok(!written.includes(pullingLine));
+    assert.ok(
+      written.some(
+        (line) =>
+          line.startsWith(`${cleared}| image pulled (`) &&
+          line.includes("s): finding ghcr.io/shame/chat:1 in docker's VM"),
+      ),
+      written.join("\n"),
+    );
+    written.forEach((line, index) => {
+      if (line.startsWith("tty ") || index === 0) return;
+      const drawn = written
+        .slice(0, index)
+        .findLastIndex((before) => !before.startsWith("tty "));
+      const since = written.slice(drawn + 1, index);
+      if (since.length > 0) assert.equal(since.at(-1), cleared, line);
+    });
+    assert.ok(
+      written.slice(1).some((line) => line === cleared),
+      "the spinner was drawn and cleared",
+    );
+  }
 });

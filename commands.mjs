@@ -14,6 +14,7 @@
 import { constants } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
+import { clearInterval, setInterval } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
@@ -118,6 +119,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {string} cli this CLI's entry, as an absolute path
  * @property {(line: string) => void} out
  * @property {(line: string) => void} err
+ * @property {{write: (text: string) => void, columns: () => number}} [terminal] stderr as a terminal, written unended, where it is one
  *
  * @typedef {{host: CliHost, poolFile: string, positionals: string[]}} CliCall
  */
@@ -302,6 +304,66 @@ async function stop(call) {
   return 1;
 }
 
+/** The frames of the line naming the check under way, one per redraw. */
+const doctorSpinnerFrames = ["|", "/", "-", "\\"];
+
+/** How often the line naming the check under way is redrawn. */
+const doctorSpinnerRedrawMs = 100;
+
+/**
+ * Where `doctor` says each finding as it is made: one that passed on stdout,
+ * any other on stderr. On a terminal that is not dumb, a line on stderr names
+ * the check under way and how long it has run, redrawn in place and cleared
+ * before each finding; anywhere else a check that can take minutes says so in
+ * a plain line before it starts. `ended` clears the line and stops it.
+ *
+ * @param {CliHost} host
+ * @returns {{report: import("./doctor.mjs").DoctorReport, ended: () => void}}
+ */
+function doctorSaid(host) {
+  const terminal = host.environment.TERM === "dumb" ? undefined : host.terminal;
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let redraw;
+  const ended = () => {
+    if (redraw === undefined) return;
+    clearInterval(redraw);
+    redraw = undefined;
+    terminal?.write("\r\x1b[2K");
+  };
+  return {
+    ended,
+    report: {
+      running: (check, slow) => {
+        ended();
+        if (terminal === undefined) {
+          if (slow !== undefined) host.err(`${check}: ${slow}`);
+          return;
+        }
+        const startedMs = Date.now();
+        let frame = 0;
+        const drawn = () => {
+          const secs = Math.floor((Date.now() - startedMs) / 1000);
+          const line = `${doctorSpinnerFrames[frame % doctorSpinnerFrames.length]} ${check} (${String(secs)}s)${slow === undefined ? "" : `: ${slow}`}`;
+          frame += 1;
+          terminal.write(
+            `\r\x1b[2K${line.slice(0, Math.max(terminal.columns() - 1, 0))}`,
+          );
+        };
+        drawn();
+        redraw = setInterval(drawn, doctorSpinnerRedrawMs);
+        redraw.unref();
+      },
+      found: (...findings) => {
+        ended();
+        for (const finding of findings)
+          (finding.passed && finding.warning !== true ? host.out : host.err)(
+            findingLine(finding),
+          );
+      },
+    },
+  };
+}
+
 /**
  * Which copy is speaking, under which Node, and then each check.
  *
@@ -313,30 +375,30 @@ async function doctor(call) {
   host.out(
     `chuggy-darwin ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
   );
-  const findings = await doctorFindings({
-    poolFile: call.poolFile,
-    paths,
-    uid: host.uid,
-    home: host.home,
-    path: host.environment.PATH,
-    agentVersion: agentVersionAsked,
-    parts: {
-      engine: () => host.engine ?? runnerEngine(),
-      colima: () => host.colima ?? colimaCli(),
-      tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
-      plane: (credentials) =>
-        poolRunnerPlane(credentials, {
-          package: host.packageName,
-          version: host.version,
-        }),
-      updates: (config) =>
-        runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
+  const said = doctorSaid(host);
+  const findings = await doctorFindings(
+    {
+      poolFile: call.poolFile,
+      paths,
+      uid: host.uid,
+      home: host.home,
+      path: host.environment.PATH,
+      agentVersion: agentVersionAsked,
+      parts: {
+        engine: () => host.engine ?? runnerEngine(),
+        colima: () => host.colima ?? colimaCli(),
+        tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
+        plane: (credentials) =>
+          poolRunnerPlane(credentials, {
+            package: host.packageName,
+            version: host.version,
+          }),
+        updates: (config) =>
+          runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
+      },
     },
-  });
-  for (const finding of findings)
-    (finding.passed && finding.warning !== true
-      ? call.host.out
-      : call.host.err)(findingLine(finding));
+    said.report,
+  ).finally(said.ended);
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
@@ -694,30 +756,30 @@ async function chatDoctor(call) {
     `chuggy-darwin ${host.version} at ${host.cli}, under Node ${host.nodeVersion} at ${host.node}`,
   );
   const paths = runnerPaths(host.home);
-  const findings = await chatDoctorFindings({
-    poolFile: call.poolFile,
-    paths,
-    uid: host.uid,
-    home: host.home,
-    parts: {
-      engine: () => host.engine ?? runnerEngine(),
-      tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
-      plane: (credentials, idleSecs) =>
-        poolRunnerPlane(
-          credentials,
-          { package: host.packageName, version: host.version },
-          undefined,
-          idleSecs,
-          host.fetch,
-        ),
-      updates: (config) =>
-        runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
+  const said = doctorSaid(host);
+  const findings = await chatDoctorFindings(
+    {
+      poolFile: call.poolFile,
+      paths,
+      uid: host.uid,
+      home: host.home,
+      parts: {
+        engine: () => host.engine ?? runnerEngine(),
+        tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
+        plane: (credentials, idleSecs) =>
+          poolRunnerPlane(
+            credentials,
+            { package: host.packageName, version: host.version },
+            undefined,
+            idleSecs,
+            host.fetch,
+          ),
+        updates: (config) =>
+          runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
+      },
     },
-  });
-  for (const finding of findings)
-    (finding.passed && finding.warning !== true ? host.out : host.err)(
-      findingLine(finding),
-    );
+    said.report,
+  ).finally(said.ended);
   return findings.every((finding) => finding.passed) ? 0 : 1;
 }
 
