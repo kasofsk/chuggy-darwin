@@ -65,7 +65,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {boolean} [desktop] `false` where the user is not logged in at the Mac's screen
  * @property {import("./power.mjs").PowerAssertion} [power] where not one asserting nothing
  * @property {string[]} [written] each write, as it is made, `out ` or `err ` before each line and `tty ` before what is written to stderr as a terminal
- * @property {boolean} [terminal] whether stderr is a terminal, 80 columns wide
+ * @property {boolean} [terminal] whether stderr is a terminal
  */
 
 /** The version the suite's copy says it is. */
