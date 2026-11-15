@@ -10,7 +10,7 @@ import { join } from "node:path";
  * @property {string} config the runner's own file
  * @property {string} agents where launchd reads the user's agents
  * @property {string} pools the directory register writes pool files to
- * @property {string} signIns where `mcp` keeps each site's sign-in
+ * @property {string} signIns where an earlier `mcp` kept each site's sign-in, which the core moves into the contract's shared store
  * @property {string} logs where an ended job's logs are saved
  * @property {string} jobs where a job run on the Mac itself has its directory
  * @property {string} images where the record of docker's images is kept
