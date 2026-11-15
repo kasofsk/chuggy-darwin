@@ -162,13 +162,15 @@ test("the core's settings line says each bound and whose image runs as the runne
       sessionsMax: 3,
       sessionMemoryMib: 1024,
       idleSecs: 60,
+      deadlineSecs: 3600,
+      sessionCapabilities: ["RepositoryRead", "ProjectRead"],
       outputBytesMax: 1024,
       image: { image: "mine:1", pull: "never" },
     },
   });
   assert.equal(
     chatHostSettingsLine(chatHostSettings(own.credentials, own.config)),
-    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 60, outputBytesMax 1024, image mine:1, pulled never",
+    "sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs 60, deadlineSecs 3600, sessionCapabilities RepositoryRead ProjectRead, outputBytesMax 1024, image mine:1, pulled never",
   );
   const { credentials, config } = await chatRead(t);
   assert.match(

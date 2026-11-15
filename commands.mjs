@@ -390,8 +390,7 @@ async function doctor(call) {
         tokens: (credentials) => host.tokens ?? poolRunnerTokens(credentials),
         plane: (credentials) =>
           poolRunnerPlane(credentials, {
-            package: host.packageName,
-            version: host.version,
+            runner: { package: host.packageName, version: host.version },
           }),
         updates: (config) =>
           runnerUpdates({ config, paths }, runnerCopy(host), host.updatePorts),
@@ -769,9 +768,10 @@ async function chatDoctor(call) {
         plane: (credentials, idleSecs) =>
           poolRunnerPlane(
             credentials,
-            { package: host.packageName, version: host.version },
-            undefined,
-            idleSecs,
+            {
+              runner: { package: host.packageName, version: host.version },
+              ...(idleSecs === undefined ? {} : { idleSecs }),
+            },
             host.fetch,
           ),
         updates: (config) =>
