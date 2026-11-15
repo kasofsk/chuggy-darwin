@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.22.0/chuggy-darwin-0.22.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.23.0/chuggy-darwin-0.23.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`. `chuggy-darwin --version` names the copy installed, and a run keeps it on the release chuggy names: see [Updates](#updates).
@@ -195,6 +195,8 @@ The host reads runner.json's Claude credential, `network` and `autoUpdate`, and 
 - **`chat.sessionsMax`** (4): the most sessions the host runs at once.
 - **`chat.sessionMemoryMib`** (2048): the memory the supervisor is given for each of those. The supervisor is capped at `sessionsMax` times this, swap included, so the default cap is 8 GiB.
 - **`chat.idleSecs`** (none): how long a session may sit idle before it ends, which chuggy holds it to as named rather than capping it at a window of its own. Unset, a session has no idle limit.
+- **`chat.deadlineSecs`** (none): how long a session may run before it is stopped, refused above what a session's timer holds. Unset, a session has no deadline.
+- **`chat.sessionCapabilities`** (every capability of the roster): the capabilities each thread may hold, which narrow its roster. Set, the host claims no session from a chuggy that does not read them.
 - **`chat.outputBytesMax`** (runner.json's `outputBytesMax`): the most a session may write of its output.
 - **`chat.image`** (none): the host's own session image, run in place of the one chuggy names, and pulled `always`, where `missing` from the VM, or `never`. An image chuggy names is pulled where it is missing, under the host's token where it is in chuggy's registry.
 
@@ -212,4 +214,4 @@ It needs Colima's vz VM with virtiofs mounts, Colima's default, and the credenti
 claude mcp add chuggy -- chuggy-darwin mcp --site <origin> --workspace <workspace> --project <project>
 ```
 
-`mcp` serves a coding agent on this Mac the `chuggy` tools a session pod has, for one project: it reads, drafts and releases tickets under your own sign-in, and decides nothing. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this Mac. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `~/.config/chuggy/sign-ins`, in a file only you can read, one per site, shared by every chat on the Mac.
+`mcp` serves a coding agent on this Mac the `chuggy` tools a session pod has, for one project: it reads, drafts, releases, takes and returns tickets and reads and changes your own agent accounts under your own sign-in, and decides nothing. It takes no pool file. The first call with no sign-in answers with the site's sign-in address for the agent to hand you; the sign-in returns to a page `mcp` holds on `127.0.0.1`, so it is opened in a browser on this Mac. Once you sign in, calls go through, and the token is renewed ahead of its expiry. The renewal token is kept in `~/.config/chuggy/sign-ins`, or `$XDG_CONFIG_HOME/chuggy/sign-ins` where that is set, in a file only you can read, one per site, shared by every chat on the Mac and by chuggy's setup program.
