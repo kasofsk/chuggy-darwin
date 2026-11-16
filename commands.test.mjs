@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { workerRunnerHeader } from "@chuggy/worker-contract/workerPool";
 import { controlSocketPath } from "@chuggy/worker-core/control.mjs";
 import { heldCreateArgv } from "@chuggy/worker-core/engineArgv.mjs";
+import { runtimeScratch } from "@chuggy/worker-core/runtimeScratch.mjs";
 import {
   poolIdentityDigest,
   poolLabelValue,
@@ -1589,6 +1590,45 @@ const issuedTokens = {
   acquire: async () => ({ acquired: "Token", token: "pool-token" }),
   invalidate: () => undefined,
 };
+
+/**
+ * Catches a signalled chat host that exits without its end, which closes its
+ * sessions and tells the plane they ended, or that ends as a failure launchd
+ * restarts, or leaves its scratch. A host the signal does not end is denied
+ * at its next poll, rather than serving on.
+ */
+test("a signal to a serving chat host calls its end, after which its run removes its scratch and exits 0", async (t) => {
+  const { home, poolFile, paths } = await chatFixture(t);
+  const runtime = poolRuntimeDirectory(paths, fixtureChatHost);
+  let polls = 0;
+  const fetch = async () => {
+    polls += 1;
+    if (polls === 1) {
+      await mkdir(join(runtime, `${runtimeScratch("pull")}x`));
+      process.emit("SIGHUP");
+    }
+    return globalThis.Response.json({
+      assignments: [],
+      sessions: [],
+      stop: [],
+    });
+  };
+  const { status, out, err } = await called(["run", "--pool", poolFile], {
+    fetch,
+    home,
+    engine: fakeEngine().engine,
+    tokens: {
+      acquire: async () =>
+        polls === 0 ? issuedTokens.acquire() : deniedTokens.acquire(),
+      invalidate: () => undefined,
+    },
+  });
+  assert.equal(status, 0, err);
+  assert.match(out, /^this chat host ended\b/mu);
+  assert.equal(polls, 1);
+  assert.deepEqual(await readdir(runtime), []);
+  assert.equal(process.listenerCount("SIGHUP"), 0);
+});
 
 /**
  * Docker held in memory, its VM room for the default supervisor's cap,

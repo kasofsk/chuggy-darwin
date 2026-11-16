@@ -17,6 +17,7 @@
  * so its credentials' directory is root's; no session's user can enter it.
  */
 
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
@@ -34,12 +35,14 @@ import { poolCredentials } from "@chuggy/worker-core/poolCredentials.mjs";
 import { poolIdentityChatHost } from "@chuggy/worker-core/poolIdentity.mjs";
 import { poolRunnerTokens } from "@chuggy/worker-core/poolRunner.mjs";
 
+import { launchAgentExitTimeoutSecs } from "./launchAgent.mjs";
 import { powerAssertion } from "./power.mjs";
 import {
   dockerEndpoint,
   poolRuntimeDirectory,
   poolSocket,
   runnerEngine,
+  scratchRemovedSignalled,
 } from "./runner.mjs";
 import {
   credentialFileRefusal,
@@ -208,5 +211,52 @@ export async function chatHostParts(setup, host) {
     engine,
     host: served,
     power: host.power ?? powerAssertion({ log: host.log }),
+  };
+}
+
+/** The signals that end a chat host: launchd's stop, an interrupt and a hangup. */
+const chatHostEndSignals = /** @type {const} */ ([
+  "SIGTERM",
+  "SIGINT",
+  "SIGHUP",
+]);
+
+/** What a signalled chat host's end is given, half of launchd's exit timeout. */
+export const chatHostEndWaitMs = (launchAgentExitTimeoutSecs * 1000) / 2;
+
+/**
+ * When a signalled chat host whose run has not answered ends by the signal
+ * regardless, short of launchd's SIGKILL.
+ */
+const chatHostEndExitMs = (launchAgentExitTimeoutSecs * 1000 * 3) / 4;
+
+/**
+ * Has a SIGTERM, SIGINT or SIGHUP call the chat host's `end` with
+ * `chatHostEndWaitMs`, after which its run answers `Ended`. Where the run has
+ * not answered by `chatHostEndExitMs`, this process's scratch is removed and
+ * the process ended by that signal, as a pool's run is at once. What this
+ * returns takes the handlers back once the run has answered.
+ *
+ * @param {string} runtime
+ * @param {(waitMs: number) => void} end
+ * @returns {() => void}
+ */
+export function chatHostEndedOnSignal(runtime, end) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let signalled;
+  const handlers = chatHostEndSignals.map((signal) => {
+    const handler = () => {
+      end(chatHostEndWaitMs);
+      signalled ??= setTimeout(
+        () => scratchRemovedSignalled(runtime, signal),
+        chatHostEndExitMs,
+      ).unref();
+    };
+    process.once(signal, handler);
+    return { signal, handler };
+  });
+  return () => {
+    clearTimeout(signalled);
+    for (const { signal, handler } of handlers) process.off(signal, handler);
   };
 }
