@@ -115,7 +115,7 @@ function textOf(answer) {
   return answer.content.map(({ text }) => text).join("");
 }
 
-test("an agent is given the project tools and its own agent accounts' tools, and reads a ticket under a renewed sign-in", async (t) => {
+test("an agent is given the project tools, its own agent accounts' tools and the merge of a ticket's pull request, and reads a ticket under a renewed sign-in", async (t) => {
   const { site, grants } = await siteOf(t);
   const home = await homeOf(t);
   const file = localToolSignInFile(runnerPaths(home).signIns, site);
@@ -132,6 +132,7 @@ test("an agent is given the project tools and its own agent accounts' tools, and
     "update_usage_settings",
     "retry_paused_agent",
     "retire_credential",
+    "merge_pull_request",
   ]) {
     assert.ok(names.includes(name), name);
   }
