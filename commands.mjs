@@ -8,7 +8,8 @@
  * `once` fails on any pass that did not reconcile, a denial among them, and
  * where the file leaves the pool no work. A member's chat host's file is
  * served by the same commands, the file's kind choosing which: `run` ends as
- * a pool's does, and `once` and `stop` are refused of it.
+ * a pool's does, and also without failing when a signal ends it, and `once`
+ * and `stop` are refused of it.
  */
 
 import { constants } from "node:fs";
@@ -52,6 +53,7 @@ import {
 import { chatDoctorFindings } from "./chatDoctor.mjs";
 import {
   chatCredentialRefusal,
+  chatHostEndedOnSignal,
   chatHostParts,
   chatHostSettings,
   chatSetup,
@@ -78,6 +80,7 @@ import {
   dockerMachine,
   hostPlatform,
   jobNetwork,
+  ownScratchRemoved,
   poolRuntimeDirectory,
   poolSocket,
   runnerDirectories,
@@ -667,8 +670,9 @@ async function mcp(host, values, positionals) {
 }
 
 /**
- * Serves a member's chat host until the plane denies it, which is done, or
- * its runner installs a release of itself, which its agent restarts it on.
+ * Serves a member's chat host until the plane denies it or a signal ends it,
+ * each of which is done, or its runner installs a release of itself, which
+ * its agent restarts it on.
  * It claims the host's control socket before removing what a killed run
  * left, as a pool's service does, and keeps the Mac from idle sleep while it
  * serves, since a sleeping Mac pauses the VM its sessions run in.
@@ -696,18 +700,22 @@ async function chatRun(call) {
   });
   await runnerDirectories(setup.paths, parts.runtime);
   const server = await controlServer(parts.socket, chatHostControl(parts.host));
+  let signals = () => undefined;
   try {
     await runnerLeftoversRemoved(parts.runtime);
-    scratchRemovedOnSignal(parts.runtime);
+    signals = chatHostEndedOnSignal(parts.runtime, parts.host.end);
     if ((await jobNetwork(parts.engine, setup.config.network)) === "Created")
       call.host.out(`made the network ${setup.config.network}`);
     parts.power.held(true);
-    return runnerEnded(await parts.host.run(), {
+    const outcome = await parts.host.run();
+    if (outcome.passed === "Ended") ownScratchRemoved(parts.runtime);
+    return runnerEnded(outcome, {
       log: call.host.out,
       updates,
       underAgent: launchAgentRunning(call.host.environment, call.poolFile),
     });
   } finally {
+    signals();
     parts.power.held(false);
     server.close();
   }

@@ -42,6 +42,13 @@ const launchctlCallMsMax = 30_000;
 /** The seconds launchd waits before starting a runner again, so one that cannot reach docker does not spin. */
 const restartIntervalSecs = 10;
 
+/**
+ * The seconds launchd gives a stopped agent between its SIGTERM and its
+ * SIGKILL: launchd's `ExitTimeOut` default, which the property list leaves in
+ * place.
+ */
+export const launchAgentExitTimeoutSecs = 20;
+
 /** The umask a run writes under, so what it makes is its owner's alone. */
 const ownerOnlyUmask = 0o077;
 

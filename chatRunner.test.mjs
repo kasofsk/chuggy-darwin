@@ -18,6 +18,8 @@ import {
   chatCredentialOwner,
   chatCredentialRefusal,
   chatFileRefusal,
+  chatHostEndWaitMs,
+  chatHostEndedOnSignal,
   chatHostSettings,
   chatSetup,
   chatSupervisorPlaces,
@@ -28,6 +30,7 @@ import {
   fixturePool,
   ownerOnly,
 } from "./runner.fixture.mjs";
+import { launchAgentExitTimeoutSecs } from "./launchAgent.mjs";
 import { runnerConfig } from "./runnerConfig.mjs";
 
 /** A chat host's file and the runner's, read. */
@@ -239,4 +242,29 @@ test("a chat host's supervisor is handed each Claude credential of a set, each d
     (await chatCredentialRefusal(refused.config, runner)) ?? "",
     new RegExp(`^the Claude token file ${outside} is not under `, "u"),
   );
+});
+
+/**
+ * Catches a chat host a stop, an interrupt or a hangup ends without its end,
+ * or one whose end could outlast launchd's wait for it to exit, or handlers
+ * left behind once the run has answered.
+ */
+test("a SIGTERM, SIGINT or SIGHUP calls the chat host's end within launchd's exit timeout, and the handlers are taken back after", () => {
+  assert.ok(chatHostEndWaitMs < launchAgentExitTimeoutSecs * 1000);
+  for (const signal of /** @type {const} */ (["SIGTERM", "SIGINT", "SIGHUP"])) {
+    const before = process.listeners(signal);
+    /** @type {number[]} */
+    const ends = [];
+    const takenBack = chatHostEndedOnSignal("/nonexistent", (waitMs) =>
+      ends.push(waitMs),
+    );
+    const added = process
+      .listeners(signal)
+      .filter((listener) => !before.includes(listener));
+    assert.equal(added.length, 1, signal);
+    added[0]?.(signal);
+    takenBack();
+    assert.deepEqual(ends, [chatHostEndWaitMs], signal);
+    assert.deepEqual(process.listeners(signal), before, signal);
+  }
 });

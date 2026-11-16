@@ -275,14 +275,15 @@ export async function runnerLoop(client, seams) {
 
 /**
  * The exit status of a run whose loop has ended: done where the plane denied
- * it, and otherwise the status its agent restarts it on, said.
+ * it or a chat host was ended, and otherwise the status its agent restarts
+ * it on, said.
  *
- * @param {Extract<import("@chuggy/worker-core/poolLoop.mjs").WorkerPoolPass, {passed: "Denied" | "Updated"}>} pass
+ * @param {import("@chuggy/worker-core/chatHost.mjs").ChatHostOutcome} pass
  * @param {{log: (line: string) => void, updates: WorkerPoolUpdates, underAgent: boolean}} seams
  * @returns {number}
  */
 export function runnerEnded(pass, seams) {
-  if (pass.passed === "Denied") return 0;
+  if (pass.passed === "Denied" || pass.passed === "Ended") return 0;
   const release = `${seams.updates.updater.runner.package} ${pass.version}`;
   seams.log(
     seams.underAgent
@@ -736,11 +737,19 @@ export function ownScratchRemoved(runtime, pid = process.pid) {
  */
 export function scratchRemovedOnSignal(runtime) {
   for (const signal of ["SIGTERM", "SIGINT"])
-    process.once(signal, () => {
-      try {
-        ownScratchRemoved(runtime);
-      } finally {
-        process.kill(process.pid, signal);
-      }
-    });
+    process.once(signal, () => scratchRemovedSignalled(runtime, signal));
+}
+
+/**
+ * Removes this process's own scratch, then ends the process by `signal`.
+ *
+ * @param {string} runtime
+ * @param {NodeJS.Signals} signal
+ */
+export function scratchRemovedSignalled(runtime, signal) {
+  try {
+    ownScratchRemoved(runtime);
+  } finally {
+    process.kill(process.pid, signal);
+  }
 }
