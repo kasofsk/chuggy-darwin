@@ -1554,7 +1554,7 @@ test("status of a chat host names the settings, what the service says of its sup
     stopped.out,
     [
       "service: not running",
-      "settings: sessionsMax 3, sessionMemoryMib 2048, so the supervisor is capped at 6144 MiB, idleSecs none, deadlineSecs none, sessionCapabilities every capability of the roster, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 65536, image the one chuggy names",
+      "settings: sessionsMax 3, sessionMemoryMib 1024, so the supervisor is capped at 3072 MiB, idleSecs none, deadlineSecs none, sessionCapabilities every capability of the roster, ticketWakes unset, so chuggy's default: no wakes, outputBytesMax 65536, image the one chuggy names",
     ].join("\n"),
   );
   assert.deepEqual(state.calls.at(-1)?.argv.slice(0, 4), [
@@ -1755,7 +1755,7 @@ test("doctor of a chat host checks the host's file, the credential's layout, doc
   probeAsserted(state, tokenFile);
   assert.match(
     out,
-    /^ok {4}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, within the VM's 16384 MiB$/mu,
+    /^ok {4}memory cap: the supervisor is capped at 4096 MiB, sessionsMax 4 at 1024 MiB each, within the VM's 16384 MiB$/mu,
   );
   assert.match(
     out,
@@ -1792,7 +1792,7 @@ test("doctor of a chat host fails a running supervisor no service of the host an
   );
   assert.match(
     err,
-    /^warn {2}memory cap: the supervisor is capped at 8192 MiB, sessionsMax 4 at 2048 MiB each, past the VM's 2048 MiB, so the VM runs out before the cap is reached; lower chat\.sessionsMax or chat\.sessionMemoryMib, or give Colima more memory$/mu,
+    /^warn {2}memory cap: the supervisor is capped at 4096 MiB, sessionsMax 4 at 1024 MiB each, past the VM's 2048 MiB, so the VM runs out before the cap is reached; lower chat\.sessionsMax or chat\.sessionMemoryMib, or give Colima more memory$/mu,
   );
   assert.equal(state.containers.get(name)?.status, "running");
   state.containers.get(name).status = "exited";
