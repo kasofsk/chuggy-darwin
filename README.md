@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.27.0/chuggy-darwin-0.27.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.28.0/chuggy-darwin-0.28.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`. `chuggy-darwin --version` names the copy installed, and a run keeps it on the release chuggy names: see [Updates](#updates).
@@ -56,11 +56,11 @@ The runner reads `~/Library/Application Support/chuggy-darwin/runner.json`, mode
 
 `claudeTokenFile` is where `claude setup-token`'s output was saved, a Claude subscription's token; `claudeCredential` names a credential of any kind instead, and a file names one or the other. `codexCredential` (none), `concurrencyMax` (1), `sessionsMax` (2), `environment`, `network` (`chuggy-jobs`), `images` (none), `capabilities` (none, never a platform, each once), `volumes` (none), `pools` (none), `imageUnusedSecsMax` (a week, 604800), `diskFreeGibMin` (20), `memoryFreeGibMin` (0), `memoryReservedGib` (0), `autoUpdate` (`true`) and `reportMetrics` (`false`) are optional. `reportMetrics` `true` has each pool's agent report its work, the Mac's name, and Colima's VM's CPUs, load, memory and free disk against the floor to chuggy, whose Grafana shows them. On a pool registered with `--host`, `environment` may not name `HOME` or `TMPDIR`, which each host job has of its own.
 
-Each pool's agent runs `concurrencyMax` jobs and `sessionsMax` sessions at once. Set `sessionsMax` to 0 to run no sessions, or `concurrencyMax` to 0 to run sessions alone, as a runner kept for a project's lead does; a file setting both to 0 is refused, since that runner would take no work. A personal runner's agent runs no session, whatever `sessionsMax` or its entry in `pools` says, so one whose `concurrencyMax` is 0 would take no work. Set its own `pools.<name>.concurrencyMax` above 0 and load its agent again, rather than the file's `concurrencyMax`, which would also hand jobs to a pool here kept for sessions alone; or run your chats on a chat host (`chuggy-darwin register --chat`) and unload this agent. `run` says so and exits 0, so launchd leaves it stopped, `once` refuses it, `status` prints it as the limits and `doctor` fails it. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A personal runner that takes jobs beside a project's pool kept for its lead:
+Each pool's agent runs `concurrencyMax` jobs at once and takes no session, since chuggy claims a pool none: where a project routes its threads to runners, a member's threads run on their [chat host](#chat-host). `sessionsMax`, and a pool's `sessionsMax` in `pools`, change nothing a pool's agent takes; a chat host's own limit is `chat.sessionsMax`. A pool whose `concurrencyMax` is 0 takes no work. A file setting `concurrencyMax` and `sessionsMax` both to 0 is refused. For a personal runner whose `concurrencyMax` is 0, `run` says so and exits 0, so launchd leaves it stopped, `once` refuses it, `status` prints it as the limits and `doctor` fails it: set its own `pools.<name>.concurrencyMax` above 0 and load its agent again, or unload this agent. A job no runner has room for waits until one has. `pools` sets one pool's agent apart from the rest, keyed by its pool file's name without `.json`; each limit it names replaces the file's for that agent alone. A pool that takes more jobs at once than the rest:
 
 ```json
-"concurrencyMax": 2,
-"pools": { "vteng.chuggy.lead": { "concurrencyMax": 0, "sessionsMax": 1 } }
+"concurrencyMax": 1,
+"pools": { "vteng.chuggy.shame": { "concurrencyMax": 3 } }
 ```
 
 An agent reads this file when it starts, so restart it after an edit; `status` and `doctor` print the limits the file now gives the pool they are given, and `doctor` warns of an entry naming no file in `~/.config/chuggy/pools`.
