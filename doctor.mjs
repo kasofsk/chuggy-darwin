@@ -881,8 +881,9 @@ export async function agentFinding(input) {
 
 /**
  * The runner's file, read, and the limits it sets this pool's service,
- * failed where they leave it no work, and warned of where an entry in `pools`
- * names no pool file in the pools directory, so that it limits no service.
+ * failed where `runnerPoolLimitsRefusal` refuses them, and warned of where an
+ * entry in `pools` names no pool file in the pools directory, so that it
+ * limits no service.
  *
  * @param {DoctorInput} input
  * @param {PoolCredentials | undefined} credentials

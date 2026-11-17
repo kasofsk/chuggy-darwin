@@ -523,7 +523,7 @@ test("sessionsMax may be 0, holding no sessions", async (t) => {
   assert.equal((await runnerConfig(paths.config)).sessionsMax, 0);
 });
 
-test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+test("concurrencyMax may be 0 beside sessionsMax, and not where sessionsMax is 0 too", async (t) => {
   for (const sessions of [{}, { sessionsMax: 1 }]) {
     const { paths } = await runnerFixture(t, {
       runner: { concurrencyMax: 0, ...sessions },
@@ -542,7 +542,7 @@ test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions 
 
 test("a pool's entry in pools sets its own service's limits in place of the file's, each it names, and no other pool's", async (t) => {
   const pools = {
-    "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
+    "vteng.chuggy.checks": { concurrencyMax: 0, sessionsMax: 1 },
     "vteng.chuggy.builds": { sessionsMax: 0 },
   };
   const { paths } = await runnerFixture(t, {
@@ -553,9 +553,9 @@ test("a pool's entry in pools sets its own service's limits in place of the file
   /** @type {[string, {concurrencyMax: number, sessionsMax: number}, string][]} */
   const cases = [
     [
-      "vteng.chuggy.lead",
+      "vteng.chuggy.checks",
       { concurrencyMax: 0, sessionsMax: 1 },
-      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.lead sets them",
+      "concurrencyMax 0, sessionsMax 1, as pools.vteng.chuggy.checks sets them",
     ],
     [
       "vteng.chuggy.builds",
@@ -635,7 +635,7 @@ test("a personal runner's service holds no session whatever the file or its entr
   }
 });
 
-test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's takes sessions alone", async (t) => {
+test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's is not", async (t) => {
   const name = "newtenant.member";
   const poolFile = `/pools/${name}.json`;
   /** @type {[Record<string, unknown>, string][]} */
@@ -665,34 +665,39 @@ test("a personal runner's service is refused where its concurrencyMax is 0, nami
   }
 });
 
-test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
+test("a pool's entry is refused where it leaves that pool's service concurrencyMax 0 and sessionsMax 0, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
   const refusal =
-    "pools.vteng.chuggy.lead leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
+    "pools.vteng.chuggy.checks leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
   /** @type {[Record<string, unknown>, string][]} */
   const refused = [
     [
-      { pools: { "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 0 } } },
+      {
+        pools: { "vteng.chuggy.checks": { concurrencyMax: 0, sessionsMax: 0 } },
+      },
       refusal,
     ],
     [
-      { sessionsMax: 0, pools: { "vteng.chuggy.lead": { concurrencyMax: 0 } } },
+      {
+        sessionsMax: 0,
+        pools: { "vteng.chuggy.checks": { concurrencyMax: 0 } },
+      },
       refusal,
     ],
     [
       {
         concurrencyMax: 0,
         sessionsMax: 1,
-        pools: { "vteng.chuggy.lead": { sessionsMax: 0 } },
+        pools: { "vteng.chuggy.checks": { sessionsMax: 0 } },
       },
       refusal,
     ],
     [
-      { pools: { "vteng.chuggy.lead": { timeoutSecsMax: 60 } } },
-      'pools.vteng.chuggy.lead Unrecognized key: "timeoutSecsMax"',
+      { pools: { "vteng.chuggy.checks": { timeoutSecsMax: 60 } } },
+      'pools.vteng.chuggy.checks Unrecognized key: "timeoutSecsMax"',
     ],
     [
-      { pools: { "vteng.chuggy.lead": { concurrencyMax: -1 } } },
-      "pools.vteng.chuggy.lead.concurrencyMax Too small: expected number to be >=0",
+      { pools: { "vteng.chuggy.checks": { concurrencyMax: -1 } } },
+      "pools.vteng.chuggy.checks.concurrencyMax Too small: expected number to be >=0",
     ],
   ];
   for (const [runner, why] of refused) {

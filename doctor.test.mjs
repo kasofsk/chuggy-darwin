@@ -267,14 +267,14 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
     {
       runner: {
         pools: {
-          "vteng.chuggy.lead": { concurrencyMax: 0, sessionsMax: 1 },
-          "vteng.chuggy.leed": { concurrencyMax: 0, sessionsMax: 1 },
-          "vteng.chuggy.lead.json": { concurrencyMax: 0, sessionsMax: 1 },
+          "vteng.chuggy.checks": { concurrencyMax: 0, sessionsMax: 1 },
+          "vteng.chuggy.chekcs": { concurrencyMax: 0, sessionsMax: 1 },
+          "vteng.chuggy.checks.json": { concurrencyMax: 0, sessionsMax: 1 },
         },
       },
     },
     async ({ paths }) => {
-      await ownerOnly(join(paths.pools, "vteng.chuggy.lead.json"), "{}");
+      await ownerOnly(join(paths.pools, "vteng.chuggy.checks.json"), "{}");
       return {};
     },
   );
@@ -289,8 +289,8 @@ test("doctor names the limits a pool's entry in pools sets its service, and warn
       said.replace(/ in \S+\/chuggy\/pools,/u, " in pools,"),
     ),
     [
-      "pools.vteng.chuggy.leed names no pool file in pools, so it limits no service",
-      "pools.vteng.chuggy.lead.json names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.chekcs names no pool file in pools, so it limits no service",
+      "pools.vteng.chuggy.checks.json names no pool file in pools, so it limits no service",
     ],
   );
 });
