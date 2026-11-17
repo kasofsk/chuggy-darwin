@@ -7,7 +7,7 @@ It needs Node 24 or later, the docker CLI and Colima: `brew install node docker 
 ## Install
 
 ```sh
-npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.28.0/chuggy-darwin-0.28.0.tgz
+npm i -g https://github.com/kasofsk/chuggy-darwin/releases/download/v0.29.0/chuggy-darwin-0.29.0.tgz
 ```
 
 One tarball serves Apple silicon and Intel. It carries its dependencies, so the install fetches nothing else. `just pack` builds it from a checkout, where `./cli.mjs` stands for `chuggy-darwin`. `chuggy-darwin --version` names the copy installed, and a run keeps it on the release chuggy names: see [Updates](#updates).
@@ -189,11 +189,11 @@ chuggy-darwin install-agent --pool <file>
 The host reads runner.json's Claude credential, `network` and `autoUpdate`, and its own `chat` section, whose every key is optional and which refuses any other:
 
 ```json
-"chat": { "sessionsMax": 4, "sessionMemoryMib": 2048, "image": { "image": "ghcr.io/you/chat:1", "pull": "missing" } }
+"chat": { "sessionsMax": 4, "sessionMemoryMib": 1024, "image": { "image": "ghcr.io/you/chat:1", "pull": "missing" } }
 ```
 
 - **`chat.sessionsMax`** (4): the most sessions the host runs at once.
-- **`chat.sessionMemoryMib`** (2048): the memory the supervisor is given for each of those. The supervisor is capped at `sessionsMax` times this, swap included, so the default cap is 8 GiB.
+- **`chat.sessionMemoryMib`** (1024): the memory the supervisor is given for each of those. The supervisor is capped at `sessionsMax` times this, swap included, so the default cap is 4 GiB.
 - **`chat.idleSecs`** (none): how long a session may sit idle before it ends, which chuggy holds it to as named rather than capping it at a window of its own. Unset, a session has no idle limit.
 - **`chat.deadlineSecs`** (none): how long a session may run before it is stopped, refused above what a session's timer holds. Unset, a session has no deadline.
 - **`chat.sessionCapabilities`** (every capability of the roster): the capabilities each thread may hold, which narrow its roster. Set, it also hands each thread's shell a credential, with which the thread's scripts call chuggy through the `chuggy` command, and the host claims no session from a chuggy that does not read it. Unset, a thread holds its whole roster and its shell is handed no credential.
