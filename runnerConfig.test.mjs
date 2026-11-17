@@ -523,7 +523,7 @@ test("sessionsMax may be 0, holding no sessions", async (t) => {
   assert.equal((await runnerConfig(paths.config)).sessionsMax, 0);
 });
 
-test("concurrencyMax may be 0 beside sessions, for a runner that takes sessions alone, and not where sessionsMax is 0 too", async (t) => {
+test("concurrencyMax may be 0 beside sessionsMax, and not where sessionsMax is 0 too", async (t) => {
   for (const sessions of [{}, { sessionsMax: 1 }]) {
     const { paths } = await runnerFixture(t, {
       runner: { concurrencyMax: 0, ...sessions },
@@ -635,7 +635,7 @@ test("a personal runner's service holds no session whatever the file or its entr
   }
 });
 
-test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's takes sessions alone", async (t) => {
+test("a personal runner's service is refused where its concurrencyMax is 0, naming the key that sets it, its own entry's as the remedy and the chat host, while a pool's is not", async (t) => {
   const name = "newtenant.member";
   const poolFile = `/pools/${name}.json`;
   /** @type {[Record<string, unknown>, string][]} */

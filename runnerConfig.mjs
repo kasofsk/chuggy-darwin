@@ -179,12 +179,12 @@ function credentialSetSchema(setSchema) {
 
 export const runnerConfigSchema = z
   .strictObject({
-    /** The jobs held at once, none where it is 0, as on a runner kept for sessions. */
+    /** The jobs held at once, none where it is 0, when the pool takes no work. */
     concurrencyMax: nonnegativeSchema.default(1),
     /**
-     * The sessions a pool's service holds beside the jobs, none where it is
-     * 0. A personal runner's holds none whatever it says, since chuggy gives
-     * a personal runner no session.
+     * The sessions a pool's service may hold beside the jobs, none where it
+     * is 0. chuggy claims a pool no session, so it changes nothing a pool's
+     * service takes. A personal runner's is 0 whatever it says.
      */
     sessionsMax: nonnegativeSchema.default(2),
     /** Where `claude setup-token`'s output was saved, a subscription's credential. */
@@ -436,8 +436,7 @@ export function runnerPoolLimits(config, poolFile, identity) {
  * Why a pool's service would take no work, or nothing. The file is refused
  * where it leaves any pool's none, so only a personal runner's, holding no
  * session, is refused here: one whose `concurrencyMax` is 0. Its remedy is
- * the runner's own entry in `pools`, since the file's `concurrencyMax` would
- * also hand jobs to a pool here kept for sessions alone, or a chat host.
+ * the runner's own entry in `pools`.
  *
  * @param {RunnerConfig} config
  * @param {string} configFile where `config` was read from
