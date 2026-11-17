@@ -665,7 +665,7 @@ test("a personal runner's service is refused where its concurrencyMax is 0, nami
   }
 });
 
-test("a pool's entry is refused where it leaves that pool's service no work, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
+test("a pool's entry is refused where it leaves that pool's service concurrencyMax 0 and sessionsMax 0, whichever limit it takes from the file, or names a key a pool's limits do not have", async (t) => {
   const refusal =
     "pools.vteng.chuggy.checks leaves this pool's service concurrencyMax 0 and sessionsMax 0, so it would take no work";
   /** @type {[Record<string, unknown>, string][]} */

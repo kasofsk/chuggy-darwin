@@ -304,8 +304,9 @@ function configCredentialChecked(config, context) {
 }
 
 /**
- * Holds the file to a runner that takes some work, and each pool's service
- * its `pools` entry limits to one that takes some.
+ * Refuses a file whose `concurrencyMax` and `sessionsMax` are both 0, and an
+ * entry in `pools` that leaves its pool's service both 0. A `concurrencyMax`
+ * of 0 beside a `sessionsMax` above it is accepted.
  *
  * @param {RunnerConfig} config
  * @param {z.core.$RefinementCtx} context
@@ -433,10 +434,10 @@ export function runnerPoolLimits(config, poolFile, identity) {
 }
 
 /**
- * Why a pool's service would take no work, or nothing. The file is refused
- * where it leaves any pool's none, so only a personal runner's, holding no
- * session, is refused here: one whose `concurrencyMax` is 0. Its remedy is
- * the runner's own entry in `pools`.
+ * Why a pool's service is refused its limits, or nothing: where both are 0.
+ * The file is refused where it leaves any pool's both 0, so only a personal
+ * runner's, its `sessionsMax` held at 0, is refused here: one whose
+ * `concurrencyMax` is 0. Its remedy is the runner's own entry in `pools`.
  *
  * @param {RunnerConfig} config
  * @param {string} configFile where `config` was read from

@@ -111,8 +111,8 @@ import { runnerPaths } from "./runnerPaths.mjs";
  * @property {Engine} engine
  * @property {import("./colimaVm.mjs").ColimaCli} colima what reaches docker's VM, which its free disk is measured in
  * @property {ContainerBackend} backend
- * @property {WorkerPoolClient | undefined} client whose backend keeps the Mac awake while the pool holds work, none where `idle` says why the runner's file leaves the pool's service no work
- * @property {string | undefined} idle why the runner's file leaves the pool's service no work, or nothing
+ * @property {WorkerPoolClient | undefined} client whose backend keeps the Mac awake while the pool holds work, none where `idle` says why the runner's file's limits for the pool's service are refused
+ * @property {string | undefined} idle why the runner's file's limits for the pool's service are refused, or nothing
  */
 
 /** Where this package's releases are downloaded from, and the one place a release chuggy names is taken from. */
@@ -572,8 +572,8 @@ async function runnerPartsPolling(setup, host, found) {
 
 /**
  * The client a run passes with over its backend, reporting on itself where
- * the runner's file sets `reportMetrics`, or why the runner's file leaves its
- * service no work and so none is made.
+ * the runner's file sets `reportMetrics`, or why the runner's file's limits
+ * for its service are refused and so none is made.
  *
  * @param {RunnerSetup} setup
  * @param {WorkerPoolBackend} backend

@@ -6,10 +6,10 @@
  * says, since a restart is refused alike until the file changes; and ends
  * `updatedExitStatus` when it installed a release of itself to run again on.
  * `once` fails on any pass that did not reconcile, a denial among them, and
- * where the file leaves the pool no work. A member's chat host's file is
- * served by the same commands, the file's kind choosing which: `run` ends as
- * a pool's does, and also without failing when a signal ends it, and `once`
- * and `stop` are refused of it.
+ * where the file leaves a personal runner no work. A member's chat host's
+ * file is served by the same commands, the file's kind choosing which: `run`
+ * ends as a pool's does, and also without failing when a signal ends it, and
+ * `once` and `stop` are refused of it.
  */
 
 import { constants } from "node:fs";
