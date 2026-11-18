@@ -147,6 +147,26 @@ test("an agent is given the project tools, its own agent accounts' tools and the
   assert.equal((await readFile(file, "utf8")).trim(), "renewal-1");
 });
 
+test("every mcp on a Mac reads under the one access token the first renewal stored, renewing it once", async (t) => {
+  const { site, grants } = await siteOf(t);
+  const home = await homeOf(t);
+  const file = localToolSignInFile(runnerPaths(home).signIns, site);
+  await mkdir(runnerPaths(home).signIns, { recursive: true });
+  await writeFile(file, "renewal-0\n", { mode: 0o600 });
+
+  for (const client of [
+    await clientOf(t, home, site),
+    await clientOf(t, home, site),
+  ]) {
+    const answer = await client.callTool({
+      name: "read_ticket",
+      arguments: { ticket: 7 },
+    });
+    assert.match(textOf(answer), /^HTTP 200\n/);
+  }
+  assert.equal(grants.length, 1);
+});
+
 test("with no sign-in, a call answers a page whose answer signs the next call in", async (t) => {
   const { site } = await siteOf(t);
   const home = await homeOf(t);
