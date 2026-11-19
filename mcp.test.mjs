@@ -22,6 +22,7 @@ import { runnerPaths } from "./runnerPaths.mjs";
 
 const cli = fileURLToPath(new URL("./cli.mjs", import.meta.url));
 const ticketPath = "/api/v1/tenants/vteng/projects/chuggy/tickets/7";
+const accessToken = `chgp_${"a".repeat(43)}`;
 
 function bodyOf(request) {
   return new Promise((resolve) => {
@@ -33,7 +34,10 @@ function bodyOf(request) {
   });
 }
 
-/** A site whose issuer is itself, issuing `access-N` and `renewal-N` for the Nth grant. */
+/**
+ * A site whose issuer is itself, issuing `access-N` and `renewal-N` for the
+ * Nth grant, and whose API also takes `accessToken`.
+ */
 async function siteOf(t) {
   const grants = [];
   const server = createServer(async (request, response) => {
@@ -66,7 +70,8 @@ async function siteOf(t) {
       });
     }
     if (path === ticketPath)
-      return request.headers.authorization?.startsWith("Bearer access-")
+      return request.headers.authorization?.startsWith("Bearer access-") ||
+        request.headers.authorization === `Bearer ${accessToken}`
         ? json(200, { ticket: 7, phase: "Draft" })
         : json(401, { error: "Unauthenticated" });
     return json(404, {});
@@ -77,7 +82,7 @@ async function siteOf(t) {
 }
 
 /** A client that fails its test on any line on stdout that is not the protocol's. */
-async function clientOf(t, home, site) {
+async function clientOf(t, home, site, environment = {}) {
   const client = new Client({ name: "suite", version: "1" });
   const strays = [];
   client.onerror = (failure) => strays.push(failure);
@@ -94,7 +99,7 @@ async function clientOf(t, home, site) {
         "--project",
         "chuggy",
       ],
-      env: { HOME: home, PATH: process.env.PATH ?? "" },
+      env: { ...environment, HOME: home, PATH: process.env.PATH ?? "" },
       stderr: "pipe",
     }),
   );
@@ -165,6 +170,23 @@ test("every mcp on a Mac reads under the one access token the first renewal stor
     assert.match(textOf(answer), /^HTTP 200\n/);
   }
   assert.equal(grants.length, 1);
+});
+
+test("with an access token in CHUGGY_TOKEN, mcp reads under it and leaves the sign-in unrenewed", async (t) => {
+  const { site, grants } = await siteOf(t);
+  const home = await homeOf(t);
+  const file = localToolSignInFile(runnerPaths(home).signIns, site);
+  await mkdir(runnerPaths(home).signIns, { recursive: true });
+  await writeFile(file, "renewal-0\n", { mode: 0o600 });
+
+  const client = await clientOf(t, home, site, { CHUGGY_TOKEN: accessToken });
+  const answer = await client.callTool({
+    name: "read_ticket",
+    arguments: { ticket: 7 },
+  });
+  assert.match(textOf(answer), /^HTTP 200\n/);
+  assert.equal(grants.length, 0);
+  assert.equal((await readFile(file, "utf8")).trim(), "renewal-0");
 });
 
 test("with no sign-in, a call answers a page whose answer signs the next call in", async (t) => {
