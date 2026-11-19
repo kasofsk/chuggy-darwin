@@ -155,7 +155,8 @@ const usage = `usage: chuggy-darwin <command> [--pool <file>]
   doctor                  check everything a run needs
   install-agent           write the launchd agent that runs \`run\`
   mcp                     serve chuggy's tools for one project to a coding
-                          agent on stdio, under your own sign-in
+                          agent on stdio, under your own sign-in or the
+                          access token in CHUGGY_TOKEN
 
 The pool file is --pool, or ${poolFileVariable}. A member's chat host's file
 is run, its status asked, checked and given its agent by the same commands;
