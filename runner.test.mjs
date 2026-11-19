@@ -25,6 +25,11 @@ import {
   workerRunnerCredentialsHeader,
   workerRunnerReportRoute,
 } from "@chuggy/worker-contract/workerPool";
+import {
+  workerCommitRefVariable,
+  workerCommitVariable,
+  workerStageEnvironment,
+} from "@chuggy/worker-core/checks.mjs";
 import { claudeCredentialVariable } from "@chuggy/worker-core/claudeCredential.mjs";
 import {
   heldLabel,
@@ -1321,6 +1326,28 @@ test("a job on the Mac itself is told the kind of Claude credential the runner's
       fixture.tokenFile,
     );
   }
+});
+
+test("a job on the Mac itself is told the commit and ref its core hands it, never those runner.json's environment names", async (t) => {
+  const fixture = await runnerFixture(t, {
+    pool: hostPool,
+    runner: {
+      environment: { CHUG_COMMIT: "launcher", CHUG_REF: "refs/heads/launcher" },
+    },
+  });
+  const started = await hostStartedWith(fixture, ["Platform:MacOS:Arm64"]);
+  assert.equal(started[workerCommitVariable], "launcher");
+  const commit = "a".repeat(40);
+  const work = workerStageEnvironment(started, { commit });
+  assert.equal(work[workerCommitVariable], commit);
+  assert.equal(Object.hasOwn(work, workerCommitRefVariable), false);
+  const commitRef = "refs/heads/evaluated";
+  assert.equal(
+    workerStageEnvironment(started, { commit, commitRef })[
+      workerCommitRefVariable
+    ],
+    commitRef,
+  );
 });
 
 /**
